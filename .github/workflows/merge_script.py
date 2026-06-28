@@ -18,6 +18,7 @@ GDRIVE_CLIENT_SECRET = os.environ.get("GDRIVE_CLIENT_SECRET")
 GDRIVE_REFRESH_TOKEN = os.environ.get("GDRIVE_REFRESH_TOKEN")
 GDRIVE_FOLDER_ID     = os.environ.get("GDRIVE_FOLDER_ID")
 UPLOAD_TARGET        = os.environ.get("UPLOAD_TARGET", "gdrive").lower()
+VIDARA_API_KEY       = os.environ.get("VIDARA_API_KEY", "")
 
 TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -306,357 +307,19 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     return {"ep": ep_num_int, "path": video_path}
 
 
-# ── Rumble Upload Helper ───────────────────────────────────────────
+# ── Vidara Upload ────────────────────────────────────────────────
 
-def upload_to_rumble(video_path, title, description, srt_path=None):
+def upload_to_vidara(video_path, title, srt_path=None):
     """
-    Upload video to Rumble using Selenium with cookies.
-    Returns video URL or None.
+    Upload video to vidara.so via API
     """
     try:
-        from selenium import webdriver
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.chrome.options import Options
-    except ImportError:
-        print("❌ selenium not installed", flush=True)
-        return None
-
-    driver = None
-    rumble_url = None
-
-    try:
-        print("\n📺 Starting Rumble upload...", flush=True)
-        print(f"   Video: {video_path}", flush=True)
-        print(f"   Title: {title}", flush=True)
-
-        # Setup Chrome options
-        chrome_options = Options()
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--disable-extensions")
-        chrome_options.add_argument("--disable-plugins")
-        chrome_options.add_argument("--no-first-run")
-        chrome_options.add_argument("--no-default-browser-check")
-        chrome_options.add_argument("--password-store=basic")
-        chrome_options.add_argument("--use-mock-keychain")
-        chrome_options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-        )
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-
-        # Create driver
-        driver = None
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-        except Exception as e1:
-            print(f"⚠️ Default Chrome failed: {e1}", flush=True)
-            try:
-                from selenium.webdriver.chrome.service import Service
-                service = Service('/usr/local/bin/chromedriver')
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-            except Exception as e2:
-                print(f"⚠️ Local chromedriver failed: {e2}", flush=True)
-                try:
-                    from webdriver_manager.chrome import ChromeDriverManager
-                    from selenium.webdriver.chrome.service import Service
-                    service = Service(ChromeDriverManager().install())
-                    driver = webdriver.Chrome(service=service, options=chrome_options)
-                    print("✅ Using webdriver-manager ChromeDriver", flush=True)
-                except Exception as e3:
-                    print(f"❌ All ChromeDriver methods failed: {e3}", flush=True)
-                    return None
-
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-
-        # Load cookies
-        cookies_path = "/tmp/cookies.json"
-        if os.path.exists(cookies_path):
-            print("🍪 Loading cookies...", flush=True)
-            with open(cookies_path, 'r', encoding='utf-8') as f:
-                cookies = json.load(f)
-
-            driver.get("https://rumble.com")
-            time.sleep(2)
-
-            for cookie in cookies:
-                try:
-                    cookie_dict = {
-                        'name': cookie['name'],
-                        'value': cookie['value'],
-                        'domain': cookie.get('domain', '.rumble.com'),
-                        'path': cookie.get('path', '/'),
-                        'secure': cookie.get('secure', True),
-                    }
-                    if 'httpOnly' in cookie:
-                        cookie_dict['httpOnly'] = cookie['httpOnly']
-                    driver.add_cookie(cookie_dict)
-                except Exception as e:
-                    print(f"⚠️ Cookie {cookie.get('name')}: {e}", flush=True)
-
-            driver.refresh()
-            time.sleep(3)
-
-        # Check login
-        print("🔍 Checking login status...", flush=True)
-        driver.get("https://rumble.com")
-        time.sleep(3)
-
-        logged_in = False
-        login_indicators = [
-            'a[href="/upload"]',
-            '.upload-button',
-            '[data-testid="upload"]',
-            '.user-avatar',
-            '.avatar',
-            '[data-testid="user-menu"]',
-            '.header-user-menu',
-        ]
-
-        for selector in login_indicators:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                if elements and any(e.is_displayed() for e in elements):
-                    logged_in = True
-                    print(f"✅ Logged in (found: {selector})", flush=True)
-                    break
-            except:
-                continue
-
-        if not logged_in:
-            page_source = driver.page_source.lower()
-            if 'logout' in page_source or 'my account' in page_source or 'dashboard' in page_source:
-                logged_in = True
-                print("✅ Logged in (page source)", flush=True)
-
-        if not logged_in:
-            print("❌ Not logged in. Cookies may be expired.", flush=True)
-            return None
-
-        # Go to upload page
-        print("📤 Navigating to upload page...", flush=True)
-        driver.get("https://rumble.com/upload")
-        time.sleep(5)
-
-        # Upload video file
-        print("📁 Uploading video file...", flush=True)
-        abs_video_path = os.path.abspath(video_path)
-
-        # Try multiple selectors for file input
-        file_input = None
-        file_selectors = [
-            'input[type="file"]',
-            '.file-input',
-            '[data-testid="file-input"]',
-            'input[name="video"]',
-            'input[name="file"]',
-        ]
-
-        for selector in file_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for el in elements:
-                    if el.is_displayed() or el.get_attribute('type') == 'file':
-                        file_input = el
-                        break
-                if file_input:
-                    break
-            except:
-                continue
-
-        if not file_input:
-            # Try JavaScript
-            file_input = driver.execute_script("""
-                return document.querySelector('input[type="file"]');
-            """)
-
-        if file_input:
-            file_input.send_keys(abs_video_path)
-            print(f"✅ Video file sent", flush=True)
-        else:
-            print("❌ Cannot find file input", flush=True)
-            return None
-
-        # Wait for upload
-        print("⏳ Waiting for upload to process...", flush=True)
-        time.sleep(15)
-
-        # Wait for title field to appear
-        max_wait = 300
-        waited = 0
-        while waited < max_wait:
-            try:
-                title_field = driver.find_element(By.CSS_SELECTOR,
-                    'input[name="title"], #title, .title-input, textarea[name="title"]')
-                if title_field.is_displayed():
-                    print("✅ Upload form ready", flush=True)
-                    break
-            except:
-                pass
-
-            # Check for errors
-            try:
-                error_elements = driver.find_elements(By.CSS_SELECTOR, '.error, .alert-error, .upload-error')
-                if error_elements:
-                    error_text = error_elements[0].text
-                    print(f"❌ Upload error: {error_text}", flush=True)
-                    return None
-            except:
-                pass
-
-            time.sleep(5)
-            waited += 5
-            if waited % 30 == 0:
-                print(f"   Still uploading... ({waited}s)", flush=True)
-
-        # Fill title
-        print("📝 Filling title...", flush=True)
-        try:
-            title_field = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR,
-                    'input[name="title"], #title, .title-input, textarea[name="title"]'))
-            )
-            title_field.clear()
-            title_field.send_keys(title)
-        except Exception as e:
-            print(f"⚠️ Title field issue: {e}", flush=True)
-
-        # Fill description
-        if description:
-            print("📝 Filling description...", flush=True)
-            try:
-                desc_field = driver.find_element(By.CSS_SELECTOR,
-                    'textarea[name="description"], #description, .description-input, textarea[placeholder*="description" i]')
-                desc_field.clear()
-                desc_field.send_keys(description)
-            except Exception as e:
-                print(f"⚠️ Description field issue: {e}", flush=True)
-
-        # Upload SRT if provided
-        if srt_path and os.path.exists(srt_path):
-            print("📝 Uploading SRT subtitle...", flush=True)
-            try:
-                sub_selectors = [
-                    'input[type="file"][accept*=".srt"]',
-                    'input[type="file"][accept*=".vtt"]',
-                    '.subtitle-input',
-                    '[data-testid="subtitle-upload"]',
-                    'input[name="subtitle"]',
-                ]
-
-                sub_input = None
-                for selector in sub_selectors:
-                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        sub_input = elements[0]
-                        break
-
-                if sub_input:
-                    sub_input.send_keys(os.path.abspath(srt_path))
-                    print("✅ SRT uploaded", flush=True)
-                    time.sleep(2)
-                else:
-                    # Try clicking "Add captions" button
-                    try:
-                        caption_btns = driver.find_elements(By.XPATH,
-                            "//button[contains(text(), 'caption') or contains(text(), 'subtitle') or contains(text(), 'CC')]")
-                        if caption_btns:
-                            caption_btns[0].click()
-                            time.sleep(2)
-                            sub_input = driver.find_element(By.CSS_SELECTOR, 'input[type="file"]')
-                            sub_input.send_keys(os.path.abspath(srt_path))
-                            print("✅ SRT uploaded via caption button", flush=True)
-                    except:
-                        print("⚠️ No subtitle upload found", flush=True)
-            except Exception as e:
-                print(f"⚠️ SRT upload issue: {e}", flush=True)
-
-        # Submit/Publish
-        print("🚀 Publishing...", flush=True)
-        submit_selectors = [
-            'button[type="submit"]',
-            '.publish-btn',
-            '.submit-btn',
-            '[data-testid="publish"]',
-            '.btn-primary[type="submit"]',
-        ]
-
-        submit_btn = None
-        for selector in submit_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for el in elements:
-                    if el.is_displayed() and el.is_enabled():
-                        submit_btn = el
-                        break
-                if submit_btn:
-                    break
-            except:
-                continue
-
-        if submit_btn:
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_btn)
-            time.sleep(1)
-            submit_btn.click()
-            print("✅ Publish clicked", flush=True)
-        else:
-            # Try JavaScript
-            driver.execute_script("""
-                var btns = document.querySelectorAll('button[type="submit"], .publish-btn, .btn-primary');
-                for(var i=0; i<btns.length; i++) {
-                    if(btns[i].offsetParent !== null) { btns[i].click(); break; }
-                }
-            """)
-
-        # Wait for processing
-        print("⏳ Waiting for processing...", flush=True)
-        time.sleep(20)
-
-        # Get video URL
-        current_url = driver.current_url
-        print(f"📍 Current URL: {current_url}", flush=True)
-
-        if "/v/" in current_url or "/c/" in current_url:
-            rumble_url = current_url
-            print(f"✅ Video URL: {rumble_url}", flush=True)
-        else:
-            # Try to find video link
-            try:
-                video_links = driver.find_elements(By.CSS_SELECTOR, 'a[href*="/v/"], a[href*="/c/"]')
-                for link in video_links:
-                    href = link.get_attribute('href')
-                    if href:
-                        rumble_url = href
-                        print(f"✅ Video URL: {rumble_url}", flush=True)
-                        break
-            except:
-                pass
-
-            if not rumble_url:
-                rumble_url = current_url
-
-        return rumble_url
-
+        import vidara_uploader
+        return vidara_uploader.upload_video_to_vidara(video_path, title, srt_path)
     except Exception as e:
-        print(f"❌ Rumble upload error: {e}", flush=True)
+        print(f"❌ Vidara upload error: {e}", flush=True)
         traceback.print_exc()
         return None
-    finally:
-        if driver:
-            print("🧹 Closing browser...", flush=True)
-            try:
-                driver.quit()
-            except:
-                pass
 
 
 # ── Google Drive Upload ────────────────────────────────────────────
@@ -762,11 +425,12 @@ if __name__ == "__main__":
     print(f"🎬 Series: {data.get('series_title')}", flush=True)
     print(f"📦 Episodes: {len(episodes)}", flush=True)
 
+    target_name = "vidara.so 📺" if UPLOAD_TARGET == "vidara" else "Google Drive ☁️"
     send_telegram(
         f"🚀 *GitHub Actions* بدأ العمل!\n"
         f"🎬 المسلسل: *{data.get('series_title', 'Unknown')}*\n"
         f"📦 الحلقات: {len(episodes)}\n"
-        f"📤 الوجهة: *{'Rumble' if UPLOAD_TARGET == 'rumble' else 'Google Drive'}*"
+        f"📤 الوجهة: *{target_name}*"
     )
 
     # ── تحميل الحلقات (متوازي) ──────────────────────────────────
@@ -883,24 +547,27 @@ if __name__ == "__main__":
 
     # ── الرفع ────────────────────────────────────────────────────
 
-    if UPLOAD_TARGET == "rumble":
-        # رفع على Rumble
-        rumble_title = data.get('series_title', 'Video')
-        rumble_desc = f"Full series: {rumble_title}\nEpisodes: {downloaded_count}"
+    if UPLOAD_TARGET == "vidara":
+        # رفع على vidara.so
+        print("\n📺 Starting vidara.so upload...", flush=True)
 
-        rumble_url = upload_to_rumble(final_output, rumble_title, rumble_desc, merged_srt)
+        vidara_result = upload_to_vidara(final_output, data.get('series_title', 'Video'), merged_srt)
 
-        if rumble_url:
-            msg = f"🎉 *رفع على Rumble بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
+        if vidara_result:
+            vidara_url = vidara_result.get('url', '')
+            filecode = vidara_result.get('filecode', '')
+
+            msg = f"🎉 *رفع على vidara.so بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
             if merged_srt and os.path.exists(merged_srt):
                 msg += "\n📝 ملف الترجمة مرفق"
-            msg += f"\n\n🔗 [رابط Rumble]({rumble_url})"
+            msg += f"\n\n🔗 [رابط المشاهدة]({vidara_url})"
+
             send_telegram(msg)
-            print(f"🔗 Rumble link: {rumble_url}", flush=True)
+            print(f"🔗 Vidara link: {vidara_url}", flush=True)
         else:
-            # Fallback to Google Drive if Rumble fails
-            print("⚠️ Rumble upload failed, falling back to Google Drive...", flush=True)
-            send_telegram("⚠️ فشل الرفع على Rumble، جاري الرفع على Google Drive...")
+            # Fallback to Google Drive
+            print("⚠️ Vidara upload failed, falling back to Google Drive...", flush=True)
+            send_telegram("⚠️ فشل الرفع على vidara.so، جاري الرفع على Google Drive...")
             upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
     else:
         # رفع على Google Drive
