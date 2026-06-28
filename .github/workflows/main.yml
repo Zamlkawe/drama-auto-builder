@@ -70,5 +70,6 @@ jobs:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           JSON_PATH: ${{ github.event.client_payload.json_path }}
+          PYTHONUNBUFFERED: "1"  # ✅ يضمن طباعة الـ Logs فوراً
         run: |
           python .github/workflows/merge_script.py "$JSON_PATH"
