@@ -353,12 +353,26 @@ def upload_to_rumble(video_path, title, description, srt_path=None):
         chrome_options.add_experimental_option('useAutomationExtension', False)
 
         # Create driver
+        driver = None
         try:
             driver = webdriver.Chrome(options=chrome_options)
-        except Exception:
-            from selenium.webdriver.chrome.service import Service
-            service = Service('/usr/bin/chromedriver')
-            driver = webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e1:
+            print(f"⚠️ Default Chrome failed: {e1}", flush=True)
+            try:
+                from selenium.webdriver.chrome.service import Service
+                service = Service('/usr/local/bin/chromedriver')
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+            except Exception as e2:
+                print(f"⚠️ Local chromedriver failed: {e2}", flush=True)
+                try:
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    from selenium.webdriver.chrome.service import Service
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=chrome_options)
+                    print("✅ Using webdriver-manager ChromeDriver", flush=True)
+                except Exception as e3:
+                    print(f"❌ All ChromeDriver methods failed: {e3}", flush=True)
+                    return None
 
         driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
