@@ -9,9 +9,6 @@ import re
 import time
 import concurrent.futures
 import chardet
-from decimal import Decimal, getcontext
-
-getcontext().prec = 10
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -132,30 +129,27 @@ def normalize_subtitles(text):
             output.extend([str(i), f"{start} --> {end}"] + text_lines + [""])
     return "\n".join(output).strip()
 
-def get_video_info(video_path):
-    """استرجاع مدة الفيديو ووقت البدء باستخدام ffprobe"""
-    info = {'duration': 0, 'start_time': 0}
+def get_video_duration_ms(video_path):
+    """استرجاع مدة الفيديو بالمللي ثانية باستخدام ffprobe"""
     try:
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "format=duration,start_time",
+            "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             video_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        lines = result.stdout.strip().split('\n')
-        if len(lines) >= 1:
-            info['duration'] = float(lines[0]) if lines[0] else 0
-        if len(lines) >= 2:
-            info['start_time'] = float(lines[1]) if lines[1] else 0
+        val = result.stdout.strip()
+        if val and val != "N/A":
+            return int(float(val) * 1000)
     except Exception as e:
-        print(f"⚠️ Could not get video info: {e}", flush=True)
-    return info
+        print(f"⚠️ Could not get duration: {e}", flush=True)
+    return 0
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
-    """دمج الترجمات مع إزاحات محسوبة بدقة باستخدام معلومات الفيديو"""
+    """دمج الترجمات مع إزاحة تراكمية دقيقة"""
     merged_path = f"/tmp/{movie_name}_Full_Movie.srt"
-    cum_offset_ms = 0
+    cum_offset_ms = 0  # وقت بداية الحلقة الحالية
     global_index = 1
     all_entries = []
 
@@ -173,18 +167,14 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
         s, mi = divmod(ms, 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{mi:03d}"
 
-    # تجميع معلومات كل حلقة
+    # الحصول على مدة كل حلقة
     episode_durations = []
-    episode_starts = []
     for ep in range(1, total_eps + 1):
         mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
         if os.path.exists(mp4_path):
-            info = get_video_info(mp4_path)
-            episode_durations.append(info['duration'] * 1000)  # بالمللي
-            episode_starts.append(info['start_time'] * 1000)
+            episode_durations.append(get_video_duration_ms(mp4_path))
         else:
             episode_durations.append(0)
-            episode_starts.append(0)
 
     for ep in range(1, total_eps + 1):
         srt_path = os.path.join(temp_dir, f"ep_{ep:04d}.srt")
@@ -201,11 +191,7 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
             cum_offset_ms += episode_durations[ep-1]
             continue
 
-        # تصحيح الإزاحة: نطرح start_time حتى يبدأ التوقيت من الصفر
-        # لكن نضيف الإزاحة التراكمية
-        start_correction = episode_starts[ep-1]  # قد تكون سالبة أو موجبة
-        # نجمع الإزاحة التراكمية + تصحيح البدء
-        current_offset = cum_offset_ms - start_correction
+        offset = cum_offset_ms  # وقت بداية الحلقة الحالية
 
         blocks = re.split(r'\n\s*\n', content.strip())
         for block in blocks:
@@ -223,13 +209,8 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
             match = re.search(r'(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)\s*-->\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)', time_str)
             if not match:
                 continue
-            s_ms = ts_to_ms(match.group(1)) + current_offset
-            e_ms = ts_to_ms(match.group(2)) + current_offset
-            # تأكد من أن التوقيت ليس سالباً
-            if s_ms < 0:
-                s_ms = 0
-            if e_ms < 0:
-                e_ms = 0
+            s_ms = ts_to_ms(match.group(1)) + offset
+            e_ms = ts_to_ms(match.group(2)) + offset
 
             text_lines = lines[timestamp_line+1:]
             text_lines = [l for l in text_lines if l.strip()]
@@ -254,7 +235,7 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
         return merged_path
     return None
 
-# ---------- التحميل (نفسه مع تحسين الترميز) ----------
+# ---------- التحميل ----------
 def download_with_ytdlp(url, output_path, ep_num):
     try:
         cmd = [
@@ -354,7 +335,7 @@ def download_episode(ep_data, temp_dir, subtitle_map):
 
     return {"ep": ep_num_int, "path": video_path}
 
-# ---------- الرفع (نفس الكود) ----------
+# ---------- الرفع ----------
 def upload_to_vidara(video_path, title, srt_path=None):
     try:
         import vidara_uploader
@@ -505,7 +486,7 @@ if __name__ == "__main__":
     print("")
     print("🔀 Starting FFmpeg merge...", flush=True)
 
-    # تحويل إلى TS مع الحفاظ على التوقيت
+    # تحويل إلى TS للحفاظ على التوقيت
     ts_files = []
     for r in results:
         ep = r["ep"]
@@ -526,7 +507,7 @@ if __name__ == "__main__":
             ts_files.append(ts_path)
             print(f"  ✅ Ep {ep} → TS", flush=True)
 
-    # دمج TS مع الحفاظ على التوقيت
+    # دمج TS
     if len(ts_files) >= 2:
         ts_list_file = "/tmp/ts_list.txt"
         with open(ts_list_file, "w", encoding="utf-8") as f:
