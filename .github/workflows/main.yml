@@ -26,11 +26,30 @@ jobs:
 
       - name: Validate payload
         run: |
-          echo "JSON path: ${{ github.event.client_payload.json_path }}"
+          JSON_PATH="${{ github.event.client_payload.json_path }}"
+          echo "JSON path: $JSON_PATH"
           echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
-          test -n "${{ github.event.client_payload.json_path }}"
-          test -f "${{ github.event.client_payload.json_path }}"
-          test -f "merge_script.py"
+
+          test -n "$JSON_PATH" || (echo "❌ json_path فارغ" && exit 1)
+          test -f "merge_script.py" || (echo "❌ merge_script.py غير موجود" && exit 1)
+
+          FILE_FOUND=false
+          for i in 1 2 3 4 5 6; do
+            if [ -f "$JSON_PATH" ]; then
+              echo "✅ الملف موجود في المحاولة $i"
+              FILE_FOUND=true
+              break
+            fi
+            echo "⏳ المحاولة $i: الملف غير موجود بعد، جاري التحديث..."
+            git fetch origin main
+            git reset --hard origin/main
+            sleep 5
+          done
+
+          if [ "$FILE_FOUND" = false ]; then
+            echo "❌ الملف غير موجود بعد 6 محاولات: $JSON_PATH"
+            exit 1
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
