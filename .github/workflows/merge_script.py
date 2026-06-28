@@ -6,8 +6,8 @@ import requests
 import urllib3
 import traceback
 import re
-import base64
 import time
+import concurrent.futures
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -38,6 +38,17 @@ def fail(msg):
     print(f"\n❌ FATAL ERROR: {msg}\n", flush=True)
     send_telegram(f"❌ {msg}")
     sys.exit(1)
+
+
+def safe_delete(filepath):
+    for _ in range(5):
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                return True
+        except:
+            time.sleep(1)
+    return False
 
 
 # ── التحقق من المدخلات ─────────────────────────────────────────────
@@ -83,71 +94,136 @@ send_telegram(
     f"📦 الحلقات: {len(episodes)}"
 )
 
-# ── تحميل الحلقات ──────────────────────────────────────────────────
+# ── تحميل الحلقات (متوازي + مع إعادة محاولة) ──────────────────────
 
-list_content     = ""
 downloaded_count = 0
-subtitle_map     = {}  # ep_num -> srt_content
+subtitle_map   = {}  # ep_num -> srt_content
+download_lock  = False  # for thread-safe counter
 
-for ep in episodes:
-    url    = ep.get("video_url", "")
-    ep_num = ep.get("episode", "?")
-    sub_url = ep.get("subtitle_url", "")  # جديد: رابط الترجمة
+def download_episode(ep_data):
+    global downloaded_count
+
+    url    = ep_data.get("video_url", "")
+    ep_num = ep_data.get("episode", "?")
+    sub_url = ep_data.get("subtitle_url", "")
 
     if not url or "http" not in str(url):
         print(f"⏭ Skipping episode {ep_num}: invalid url", flush=True)
-        continue
+        return None
 
     try:
         ep_num_int = int(ep_num)
-    except Exception:
+    except:
         print(f"⏭ Skipping episode {ep_num}: invalid number", flush=True)
-        continue
+        return None
 
     video_path = os.path.join(TEMP_DIR, f"ep_{ep_num_int:04d}.mp4")
     srt_path   = os.path.join(TEMP_DIR, f"ep_{ep_num_int:04d}.srt")
-    print(f"⬇️ Downloading episode {ep_num}...", flush=True)
 
+    # ✅ إعادة المحاولة حتى 5 مرات
+    for attempt in range(5):
+        if download_lock:
+            break
+        try:
+            print(f"⬇️ Downloading episode {ep_num} (attempt {attempt + 1})...", flush=True)
+
+            # ✅ محاولة yt-dlp أولاً (للـ HLS/m3u8)
+            if ".m3u8" in url or ".mp4" not in url.split("?")[0]:
+                ydl_success = download_with_ytdlp(url, video_path, ep_num)
+                if ydl_success:
+                    break
+
+            # ✅ fallback لـ requests
+            r = requests.get(url, stream=True, verify=False, timeout=120)
+            r.raise_for_status()
+
+            with open(video_path, "wb") as out:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        out.write(chunk)
+            break
+
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt + 1} failed for ep {ep_num}: {e}", flush=True)
+            safe_delete(video_path)
+            if attempt < 4:
+                time.sleep(2 ** attempt)  # exponential backoff
+            else:
+                print(f"❌ All attempts failed for ep {ep_num}", flush=True)
+                return None
+
+    if not os.path.exists(video_path) or os.path.getsize(video_path) < 10000:
+        return None
+
+    size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    print(f"✅ Episode {ep_num} downloaded ({size_mb:.1f} MB)", flush=True)
+
+    # ✅ تحميل الترجمة
+    if sub_url and "http" in str(sub_url):
+        try:
+            print(f"  📝 Downloading subtitle for ep {ep_num}...", flush=True)
+            sub_r = requests.get(sub_url, verify=False, timeout=30)
+            if sub_r.status_code == 200:
+                srt_content = normalize_subtitles(sub_r.text)
+                if srt_content.strip():
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                    subtitle_map[ep_num_int] = srt_content
+                    print(f"  ✅ Subtitle ep {ep_num} downloaded", flush=True)
+        except Exception as sub_e:
+            print(f"  ⚠️ Subtitle download failed: {sub_e}", flush=True)
+
+    return {"ep": ep_num_int, "path": video_path}
+
+
+def download_with_ytdlp(url, output_path, ep_num):
+    """تحميل باستخدام yt-dlp للـ HLS/m3u8"""
     try:
-        # تحميل الفيديو
-        r = requests.get(url, stream=True, verify=False, timeout=120)
-        r.raise_for_status()
+        cmd = [
+            "yt-dlp",
+            "-o", output_path,
+            "--no-part", "--no-mtime",
+            "--quiet", "--no-warnings",
+            "--no-check-certificate",
+            "--retries", "10",
+            "--fragment-retries", "10",
+            "--retry-sleep", "1..3",
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-        with open(video_path, "wb") as out:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    out.write(chunk)
-
-        size_mb = os.path.getsize(video_path) / (1024 * 1024)
-        print(f"✅ Episode {ep_num} downloaded ({size_mb:.1f} MB)", flush=True)
-        list_content     += f"file '{video_path}'\n"
-        downloaded_count += 1
-
-        # تحميل الترجمة لو موجودة
-        if sub_url and "http" in str(sub_url):
-            try:
-                print(f"  📝 Downloading subtitle for ep {ep_num}...", flush=True)
-                sub_r = requests.get(sub_url, verify=False, timeout=30)
-                if sub_r.status_code == 200:
-                    srt_content = normalize_subtitles(sub_r.text)
-                    if srt_content.strip():
-                        with open(srt_path, "w", encoding="utf-8") as f:
-                            f.write(srt_content)
-                        subtitle_map[ep_num_int] = srt_content
-                        print(f"  ✅ Subtitle ep {ep_num} downloaded", flush=True)
-            except Exception as sub_e:
-                print(f"  ⚠️ Subtitle download failed: {sub_e}", flush=True)
-
+        if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
+            print(f"✅ Episode {ep_num} downloaded via yt-dlp", flush=True)
+            return True
     except Exception as e:
-        print(f"⚠️ Failed episode {ep_num}: {e}", flush=True)
+        print(f"⚠️ yt-dlp failed for ep {ep_num}: {e}", flush=True)
+
+    safe_delete(output_path)
+    return False
+
+
+# ✅ تحميل متوازي (10 حلقات في نفس الوقت)
+print("\n🚀 Starting parallel downloads (max 10 workers)...", flush=True)
+results = []
+with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    futures = {executor.submit(download_episode, ep): ep for ep in episodes}
+    for future in concurrent.futures.as_completed(futures):
+        result = future.result()
+        if result:
+            results.append(result)
+
+results.sort(key=lambda x: x["ep"])
+downloaded_count = len(results)
 
 if downloaded_count == 0:
     fail("فشل تحميل كل الحلقات. لا يوجد شيء لدمجه.")
 
+# إنشاء list file
 with open(list_file, "w", encoding="utf-8") as f:
-    f.write(list_content)
+    for r in results:
+        f.write(f"file '{r['path']}'\n")
 
-print(f"\n✅ Downloaded {downloaded_count} episodes", flush=True)
+print(f"\n✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
 if subtitle_map:
     print(f"📝 Downloaded {len(subtitle_map)} subtitle files", flush=True)
 
@@ -162,22 +238,16 @@ if subtitle_map:
     if merged_srt and os.path.exists(merged_srt):
         print(f"✅ Merged subtitle: {merged_srt}", flush=True)
 
-# ── دمج الفيديوهات (مع إصلاح التقطيع) ──────────────────────────────
+# ── دمج الفيديوهات (TS method لمنع التقطيع) ───────────────────────
 
 print("\n🔀 Starting FFmpeg merge...", flush=True)
 
-# الطريقة المحسّنة: تحويل لـ TS أولاً ثم دمج
-# ده بيمنع مشاكل الـ timestamps والتقطيع
-
-# خطوة 1: تحويل كل فيديو لـ TS (MPEG-TS)
-print("🔄 Converting to TS format...", flush=True)
+# تحويل لـ TS
 ts_files = []
-for ep in range(1, downloaded_count + 1):
-    mp4_path = os.path.join(TEMP_DIR, f"ep_{ep:04d}.mp4")
-    ts_path  = os.path.join(TEMP_DIR, f"ep_{ep:04d}.ts")
-
-    if not os.path.exists(mp4_path):
-        continue
+for r in results:
+    ep = r["ep"]
+    mp4_path = r["path"]
+    ts_path = os.path.join(TEMP_DIR, f"ep_{ep:04d}.ts")
 
     cmd = [
         "ffmpeg", "-y",
@@ -192,12 +262,9 @@ for ep in range(1, downloaded_count + 1):
     if result.returncode == 0 and os.path.exists(ts_path):
         ts_files.append(ts_path)
         print(f"  ✅ Ep {ep} → TS", flush=True)
-    else:
-        print(f"  ⚠️ Ep {ep} TS conversion failed, using MP4 directly", flush=True)
 
-# خطوة 2: دمج الـ TS files
+# دمج الـ TS
 if len(ts_files) >= 2:
-    # إنشاء list file للـ TS
     ts_list_file = "/tmp/ts_list.txt"
     with open(ts_list_file, "w", encoding="utf-8") as f:
         for tsf in ts_files:
@@ -206,8 +273,7 @@ if len(ts_files) >= 2:
     cmd = [
         "ffmpeg", "-y",
         "-fflags", "+genpts",
-        "-f", "concat",
-        "-safe", "0",
+        "-f", "concat", "-safe", "0",
         "-i", ts_list_file,
         "-c", "copy",
         "-bsf:a", "aac_adtstoasc",
@@ -215,11 +281,9 @@ if len(ts_files) >= 2:
         final_output
     ]
 else:
-    # لو فيديو واحد بس، استخدم MP4 مباشرة
     cmd = [
         "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
+        "-f", "concat", "-safe", "0",
         "-i", list_file,
         "-c", "copy",
         "-fflags", "+genpts",
@@ -240,12 +304,9 @@ if result.returncode != 0:
 if not os.path.exists(final_output):
     fail("ملف الدمج لم يُنشأ")
 
-# تنظيف الـ TS files
+# تنظيف
 for tsf in ts_files:
-    try:
-        os.remove(tsf)
-    except:
-        pass
+    safe_delete(tsf)
 
 output_size = os.path.getsize(final_output) / (1024 * 1024)
 print(f"✅ Merged file: {final_output} ({output_size:.1f} MB)", flush=True)
@@ -258,7 +319,6 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from googleapiclient.errors import HttpError
 
 try:
     creds = Credentials(
@@ -270,10 +330,7 @@ try:
         scopes=["https://www.googleapis.com/auth/drive"]
     )
 
-    print("🔄 Refreshing access token...", flush=True)
     creds.refresh(Request())
-    print(f"✅ Token refreshed!", flush=True)
-
     service = build("drive", "v3", credentials=creds)
 
     # رفع الفيديو
@@ -282,105 +339,58 @@ try:
         "parents": [GDRIVE_FOLDER_ID]
     }
 
-    media = MediaFileUpload(
-        final_output,
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=10 * 1024 * 1024
-    )
-
-    print("📤 Uploading video...", flush=True)
-    uploaded = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id, webViewLink, name"
-    ).execute()
-
+    media = MediaFileUpload(final_output, mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
+    uploaded = service.files().create(body=file_metadata, media_body=media, fields="id, webViewLink, name").execute()
     video_id = uploaded.get("id")
-    print(f"✅ Video uploaded: {uploaded.get('name')}", flush=True)
 
-    # رفع الترجمة لو موجودة
+    # رفع الترجمة
     srt_link = None
     if merged_srt and os.path.exists(merged_srt):
-        srt_metadata = {
-            "name": f"{movie_name}_Full_Movie.srt",
-            "parents": [GDRIVE_FOLDER_ID]
-        }
-        srt_media = MediaFileUpload(
-            merged_srt,
-            mimetype="application/x-subrip",
-            resumable=True
-        )
-
-        print("📤 Uploading subtitle...", flush=True)
-        srt_uploaded = service.files().create(
-            body=srt_metadata,
-            media_body=srt_media,
-            fields="id, webViewLink, name"
-        ).execute()
-
+        srt_metadata = {"name": f"{movie_name}_Full_Movie.srt", "parents": [GDRIVE_FOLDER_ID]}
+        srt_media = MediaFileUpload(merged_srt, mimetype="application/x-subrip", resumable=True)
+        srt_uploaded = service.files().create(body=srt_metadata, media_body=srt_media, fields="id, webViewLink").execute()
         srt_link = f"https://drive.google.com/file/d/{srt_uploaded.get('id')}/view"
-        print(f"✅ Subtitle uploaded: {srt_uploaded.get('name')}", flush=True)
 
     # صلاحية Public
-    service.permissions().create(
-        fileId=video_id,
-        body={"type": "anyone", "role": "reader"}
-    ).execute()
+    service.permissions().create(fileId=video_id, body={"type": "anyone", "role": "reader"}).execute()
 
     drive_link = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{video_id}/view"
 
-    msg = (
-        f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n"
-        f"🎬 *{data.get('series_title', 'Unknown')}*\n"
-        f"📦 الحلقات المحمّلة: {downloaded_count}\n"
-        f"📁 الحجم: {output_size:.0f} MB"
-    )
-
+    msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
     if srt_link:
-        msg += f"\n📝 الترجمة: [SRT ملف]({srt_link})"
-
+        msg += f"\n📝 [ملف الترجمة]({srt_link})"
     msg += f"\n\n🔗 [رابط المشاهدة]({drive_link})"
 
-    print(f"🔗 Drive link: {drive_link}", flush=True)
     send_telegram(msg)
+    print(f"🔗 Drive link: {drive_link}", flush=True)
 
 except Exception as e:
     traceback.print_exc()
-    fail(f"فشل الرفع على Google Drive:\n{str(e)[:1000]}")
+    fail(f"فشل الرفع:\n{str(e)[:1000]}")
 
 
 # ── دوال مساعدة ─────────────────────────────────────────────────────
 
 def normalize_subtitles(text):
-    """تنظيف وتحويل ترجمات VTT/SRT إلى SRT موحدة"""
     if not text:
         return ""
-
     text = text.replace('\ufeff', '').replace('\r\n', '\n').replace('\r', '\n')
     lines = text.split('\n')
 
     srt_blocks = []
     current_block_lines = []
-    start_ts = ""
-    end_ts = ""
+    start_ts = end_ts = ""
     in_block = False
 
-    ts_pattern = re.compile(
-        r'(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})\s*-->\s*(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})'
-    )
+    ts_pattern = re.compile(r'(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})\s*-->\s*(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})')
 
     def format_time(h, ms, milli):
         h = h.strip(':').zfill(2) if h else "00"
         m, s = ms.split(':')
-        m = m.zfill(2)
-        s = s.zfill(2)
-        milli = milli.ljust(3, '0')[:3]
-        return f"{h}:{m}:{s},{milli}"
+        return f"{h}:{m.zfill(2)}:{s.zfill(2)},{milli.ljust(3, '0')[:3]}"
 
     for line in lines:
         line = line.strip()
-
         if not line:
             if in_block and current_block_lines:
                 srt_blocks.append((start_ts, end_ts, current_block_lines))
@@ -388,20 +398,16 @@ def normalize_subtitles(text):
                 current_block_lines = []
             continue
 
-        upper_line = line.upper()
-        if upper_line.startswith('WEBVTT') or upper_line.startswith('REGION') or \
-           upper_line.startswith('STYLE') or upper_line.startswith('X-TIMESTAMP-MAP'):
+        upper = line.upper()
+        if upper.startswith(('WEBVTT', 'REGION', 'STYLE', 'X-TIMESTAMP-MAP')):
             continue
-        if line == '::cue {' or line == '}':
-            continue
-        if not in_block and (line.startswith('color:') or line.startswith('font-')):
+        if line in ('::cue {', '}'):
             continue
 
         m = ts_pattern.search(line)
         if m:
             if in_block and current_block_lines:
                 srt_blocks.append((start_ts, end_ts, current_block_lines))
-
             start_ts = format_time(m.group(1), m.group(2), m.group(3))
             end_ts = format_time(m.group(4), m.group(5), m.group(6))
             in_block = True
@@ -409,12 +415,10 @@ def normalize_subtitles(text):
             continue
 
         if in_block:
-            clean_line = re.sub(r'<[^>]+>', '', line)
-            clean_line = re.sub(r'\[font.*?\]', '', clean_line, flags=re.IGNORECASE)
-            clean_line = clean_line.strip()
-
-            if clean_line:
-                current_block_lines.append(clean_line)
+            clean = re.sub(r'<[^>]+>', '', line)
+            clean = re.sub(r'\[font.*?\]', '', clean, flags=re.IGNORECASE)
+            if clean.strip():
+                current_block_lines.append(clean.strip())
 
     if in_block and current_block_lines:
         srt_blocks.append((start_ts, end_ts, current_block_lines))
@@ -422,16 +426,12 @@ def normalize_subtitles(text):
     output = []
     for i, (start, end, text_lines) in enumerate(srt_blocks, 1):
         if text_lines:
-            output.append(str(i))
-            output.append(f"{start} --> {end}")
-            output.extend(text_lines)
-            output.append("")
+            output.extend([str(i), f"{start} --> {end}"] + text_lines + [""])
 
     return "\n".join(output).strip()
 
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps):
-    """دمج ملفات SRT المتعددة في ملف واحد مع ضبط التوقيت"""
     merged_path = f"/tmp/{movie_name}_Full_Movie.srt"
     cum_offset_ms = 0
     global_index = 1
@@ -454,22 +454,23 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps):
     for ep in range(1, total_eps + 1):
         srt_path = os.path.join(temp_dir, f"ep_{ep:04d}.srt")
 
+        # Get video duration for offset
+        mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
+        dur_ms = 0
+        if os.path.exists(mp4_path):
+            try:
+                r = subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "default=noprint_wrappers=1:nokey=1", mp4_path],
+                    capture_output=True, text=True, timeout=30
+                )
+                val = r.stdout.strip()
+                if val and val != "N/A":
+                    dur_ms = int(float(val) * 1000)
+            except:
+                pass
+
         if not os.path.exists(srt_path):
-            # محاولة الحصول على مدة الفيديو للـ offset
-            mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
-            dur_ms = 0
-            if os.path.exists(mp4_path):
-                try:
-                    r = subprocess.run(
-                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                         "-of", "default=noprint_wrappers=1:nokey=1", mp4_path],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    val = r.stdout.strip()
-                    if val and val != "N/A":
-                        dur_ms = int(float(val) * 1000)
-                except:
-                    pass
             cum_offset_ms += dur_ms
             continue
 
@@ -489,47 +490,28 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps):
 
                 start_text_idx = match.end()
                 if i + 1 < len(matches):
-                    next_match_start = matches[i + 1].start()
-                    end_text_idx = content.rfind('\n', start_text_idx, next_match_start)
-                    if end_text_idx == -1 or end_text_idx <= start_text_idx:
-                        end_text_idx = next_match_start
+                    end_text_idx = content.rfind('\n', start_text_idx, matches[i + 1].start())
+                    if end_text_idx <= start_text_idx:
+                        end_text_idx = matches[i + 1].start()
                 else:
                     end_text_idx = len(content)
 
                 raw_text = content[start_text_idx:end_text_idx].strip()
-                text_lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+                text_lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
                 if text_lines and text_lines[-1].isdigit():
                     text_lines = text_lines[:-1]
 
                 clean_text = '\n'.join(text_lines).strip()
-                if not clean_text:
-                    continue
-
-                entry_lines = [
-                    str(global_index),
-                    f"{ms_to_srt(s_ms)} --> {ms_to_srt(e_ms)}",
-                    clean_text
-                ]
-                all_entries.append('\n'.join(entry_lines))
-                global_index += 1
+                if clean_text:
+                    all_entries.append('\n'.join([
+                        str(global_index),
+                        f"{ms_to_srt(s_ms)} --> {ms_to_srt(e_ms)}",
+                        clean_text
+                    ]))
+                    global_index += 1
         except Exception as e:
             print(f"⚠️ Error parsing subtitle Ep{ep:02d}: {e}", flush=True)
 
-        # الحصول على مدة الفيديو للـ offset
-        mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
-        dur_ms = 0
-        if os.path.exists(mp4_path):
-            try:
-                r = subprocess.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                     "-of", "default=noprint_wrappers=1:nokey=1", mp4_path],
-                    capture_output=True, text=True, timeout=30
-                )
-                val = r.stdout.strip()
-                if val and val != "N/A":
-                    dur_ms = int(float(val) * 1000)
-            except:
-                pass
         cum_offset_ms += dur_ms
 
     if all_entries:
