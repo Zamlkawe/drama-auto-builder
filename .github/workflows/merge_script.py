@@ -8,6 +8,7 @@ import traceback
 import re
 import time
 import concurrent.futures
+import chardet  # للتعرّف على التشفير (ثبّته مسبقاً: pip install chardet)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -57,11 +58,36 @@ def safe_delete(filepath):
     return False
 
 
-# -- Subtitle Helpers -----------------------------------------------
+# -- Subtitle Helpers (مع دعم التشفير) ------------------------------
+
+def read_subtitle_file(srt_path):
+    """قراءة ملف الترجمة مع تجربة عدة تشفيرات."""
+    encodings = ['utf-8', 'windows-1256', 'iso-8859-6', 'cp1256', 'utf-8-sig']
+    for enc in encodings:
+        try:
+            with open(srt_path, 'r', encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    # إذا فشل كل التشفيرات، نجرب chardet
+    try:
+        with open(srt_path, 'rb') as f:
+            raw = f.read()
+            result = chardet.detect(raw)
+            if result and result['encoding']:
+                return raw.decode(result['encoding'])
+    except:
+        pass
+    # أخيراً نقرأ بدون تشفير (افتراضي) ونحذف الأحرف غير الصالحة
+    with open(srt_path, 'r', encoding='utf-8', errors='ignore') as f:
+        return f.read()
+
 
 def normalize_subtitles(text):
+    """تنظيف وتوحيد نص الترجمة إلى SRT صحيح."""
     if not text:
         return ""
+    # إزالة BOM والأسطر الزائدة
     text = text.replace('\ufeff', '').replace('\r\n', '\n').replace('\r', '\n')
     lines = text.split('\n')
 
@@ -86,6 +112,7 @@ def normalize_subtitles(text):
                 current_block_lines = []
             continue
 
+        # تخطي رؤوس WEBVTT و CSS
         upper = line.upper()
         if upper.startswith(('WEBVTT', 'REGION', 'STYLE', 'X-TIMESTAMP-MAP')):
             continue
@@ -103,8 +130,10 @@ def normalize_subtitles(text):
             continue
 
         if in_block:
+            # إزالة وسوم HTML و CSS
             clean = re.sub(r'<[^>]+>', '', line)
             clean = re.sub(r'\[font.*?\]', '', clean, flags=re.IGNORECASE)
+            clean = re.sub(r'\{.*?\}', '', clean)  # إزالة الأقواس المتعرجة
             if clean.strip():
                 current_block_lines.append(clean.strip())
 
@@ -120,6 +149,7 @@ def normalize_subtitles(text):
 
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
+    """دمج ترجمات الحلقات في ملف SRT واحد مع احتساب التوقيت."""
     merged_path = f"/tmp/{movie_name}_Full_Movie.srt"
     cum_offset_ms = 0
     global_index = 1
@@ -141,8 +171,9 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
 
     for ep in range(1, total_eps + 1):
         srt_path = os.path.join(temp_dir, f"ep_{ep:04d}.srt")
-
         mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
+
+        # الحصول على مدة الفيديو باستخدام ffprobe
         dur_ms = 0
         if os.path.exists(mp4_path):
             try:
@@ -154,40 +185,46 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
                 val = r.stdout.strip()
                 if val and val != "N/A":
                     dur_ms = int(float(val) * 1000)
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ Could not get duration for ep{ep}: {e}", flush=True)
 
         if not os.path.exists(srt_path):
             cum_offset_ms += dur_ms
             continue
 
         try:
-            with open(srt_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = read_subtitle_file(srt_path)
+            content = normalize_subtitles(content)
+            if not content:
+                cum_offset_ms += dur_ms
+                continue
 
-            content = content.replace('\r\n', '\n')
-            matches = list(re.finditer(
-                r'(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)\s*-->\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)',
-                content
-            ))
-
-            for i, match in enumerate(matches):
+            # تجزئة إلى كتل
+            blocks = re.split(r'\n\s*\n', content.strip())
+            for block in blocks:
+                lines = block.split('\n')
+                if len(lines) < 3:
+                    continue
+                # نبحث عن السطر الذي يحتوي على التوقيت
+                timestamp_line = None
+                for i, line in enumerate(lines):
+                    if '-->' in line:
+                        timestamp_line = i
+                        break
+                if timestamp_line is None:
+                    continue
+                time_str = lines[timestamp_line].strip()
+                match = re.search(r'(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)\s*-->\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)', time_str)
+                if not match:
+                    continue
                 s_ms = ts_to_ms(match.group(1)) + cum_offset_ms
                 e_ms = ts_to_ms(match.group(2)) + cum_offset_ms
 
-                start_text_idx = match.end()
-                if i + 1 < len(matches):
-                    end_text_idx = content.rfind('\n', start_text_idx, matches[i + 1].start())
-                    if end_text_idx <= start_text_idx:
-                        end_text_idx = matches[i + 1].start()
-                else:
-                    end_text_idx = len(content)
-
-                raw_text = content[start_text_idx:end_text_idx].strip()
-                text_lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
-                if text_lines and text_lines[-1].isdigit():
-                    text_lines = text_lines[:-1]
-
+                # النص: كل ما بعد سطر التوقيت
+                text_lines = lines[timestamp_line+1:]
+                text_lines = [l for l in text_lines if l.strip()]
+                if not text_lines:
+                    continue
                 clean_text = '\n'.join(text_lines).strip()
                 if clean_text:
                     all_entries.append('\n'.join([
@@ -196,6 +233,7 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
                         clean_text
                     ]))
                     global_index += 1
+
         except Exception as e:
             print(f"⚠️ Error parsing subtitle Ep{ep:02d}: {e}", flush=True)
 
@@ -204,12 +242,15 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
     if all_entries:
         with open(merged_path, "w", encoding="utf-8") as f:
             f.write('\n\n'.join(all_entries))
+        # تحقق من وجود محتوى
+        if os.path.getsize(merged_path) < 100:
+            print("⚠️ Merged SRT too small, might be empty", flush=True)
         return merged_path
 
     return None
 
 
-# -- Download Helpers -----------------------------------------------
+# -- Download Helpers (بدون تغيير) ----------------------------------
 
 def download_with_ytdlp(url, output_path, ep_num):
     """Download using yt-dlp for HLS/m3u8"""
@@ -255,7 +296,7 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     video_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.mp4")
     srt_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.srt")
 
-    # --- تصحيح مسار الترجمة لو كان رابط نسبي (Relative URL) ---
+    # تصحيح مسار الترجمة لو كان رابطاً نسبياً
     if sub_url:
         sub_url = str(sub_url).strip()
         if sub_url.startswith("//"):
@@ -264,7 +305,6 @@ def download_episode(ep_data, temp_dir, subtitle_map):
             sub_url = "https://netshort.dramafren.org" + sub_url
         elif not sub_url.startswith("http"):
             sub_url = "https://netshort.dramafren.org/" + sub_url
-    # --------------------------------------------------------
 
     for attempt in range(5):
         try:
@@ -304,11 +344,12 @@ def download_episode(ep_data, temp_dir, subtitle_map):
             print(f"  📝 Downloading subtitle for ep {ep_num} from {sub_url[:60]}...", flush=True)
             sub_r = requests.get(sub_url, verify=False, timeout=30)
             if sub_r.status_code == 200:
-                srt_content = normalize_subtitles(sub_r.text)
-                if srt_content.strip():
+                # نمرر النص الخام إلى normalize_subtitles (التي ستتعامل مع التشفير)
+                content = normalize_subtitles(sub_r.text)
+                if content.strip():
                     with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(srt_content)
-                    subtitle_map[ep_num_int] = srt_content
+                        f.write(content)
+                    subtitle_map[ep_num_int] = content
                     print(f"  ✅ Subtitle ep {ep_num} downloaded", flush=True)
                 else:
                     print(f"  ⚠️ Subtitle file was empty after normalization.", flush=True)
@@ -320,10 +361,10 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     return {"ep": ep_num_int, "path": video_path}
 
 
-# -- Vidara Upload --------------------------------------------------
+# -- Vidara Upload (نستخدم الملف المعدل vidara_uploader.py) ---------
+# تم استيراده من ملف منفصل، لكننا نضمن وجود الدالة.
 
 def upload_to_vidara(video_path, title, srt_path=None):
-    """Upload video to vidara.so via API"""
     try:
         import vidara_uploader
         return vidara_uploader.upload_video_to_vidara(video_path, title, srt_path)
@@ -333,10 +374,9 @@ def upload_to_vidara(video_path, title, srt_path=None):
         return None
 
 
-# -- Google Drive Upload --------------------------------------------
+# -- Google Drive Upload (بدون تغيير) --------------------------------
 
 def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size):
-    """Upload to Google Drive"""
     print("")
     print("☁️ Starting Google Drive upload...", flush=True)
 
@@ -408,13 +448,13 @@ if __name__ == "__main__":
     if not os.path.exists(json_path):
         fail(f"ملف JSON غير موجود: {json_path}")
 
-    if not all([GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN]):
-        fail("❌ متغيرات OAuth غير موجودة في Secrets")
+    # التحقق من متغيرات GDrive إن كانت الوجهة GDrive
+    if UPLOAD_TARGET == "gdrive":
+        if not all([GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN]):
+            fail("❌ متغيرات OAuth غير موجودة في Secrets")
+        if not GDRIVE_FOLDER_ID:
+            fail("متغير GDRIVE_FOLDER_ID غير موجود في Secrets")
 
-    if not GDRIVE_FOLDER_ID:
-        fail("متغير GDRIVE_FOLDER_ID غير موجود في Secrets")
-
-    print(f"✅ GDRIVE_FOLDER_ID = {GDRIVE_FOLDER_ID}", flush=True)
     print(f"✅ UPLOAD_TARGET = {UPLOAD_TARGET}", flush=True)
 
     with open(json_path, "r", encoding="utf-8") as f:
@@ -477,6 +517,12 @@ if __name__ == "__main__":
         merged_srt = merge_subtitles(TEMP_DIR, subtitle_map, downloaded_count, movie_name)
         if merged_srt and os.path.exists(merged_srt):
             print(f"✅ Merged subtitle: {merged_srt}", flush=True)
+            # طباعة أول 5 أسطر للتحقق
+            with open(merged_srt, 'r', encoding='utf-8') as f:
+                preview = f.read(500)
+            print(f"📄 SRT preview:\n{preview}...", flush=True)
+        else:
+            print("⚠️ Failed to merge subtitles", flush=True)
 
     print("")
     print("🔀 Starting FFmpeg merge...", flush=True)
