@@ -1,0 +1,29 @@
+name: Video Merger
+on:
+  repository_dispatch:
+    types: [start-merge]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install requests
+
+      - name: Run Merger Script
+        env:
+          JSON_DATA: ${{ github.event.client_payload.json_data }}
+        run: |
+          echo "$JSON_DATA" > data.json
+          python merge_script.py
