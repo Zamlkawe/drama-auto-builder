@@ -565,10 +565,8 @@ if __name__ == "__main__":
             send_telegram(msg)
             print(f"🔗 Vidara link: {vidara_url}", flush=True)
         else:
-            # Fallback to Google Drive
-            print("⚠️ Vidara upload failed, falling back to Google Drive...", flush=True)
-            send_telegram("⚠️ فشل الرفع على vidara.so، جاري الرفع على Google Drive...")
-            upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
+            # ❌ مفيش fallback على Google Drive - نفشل ونبعت السبب
+            fail("فشل الرفع على vidara.so. المشكلة: upload server (s1.vidara.so) غير موجود في DNS أو فشل الرفع على GoFile.io. تحقق من API Key وشبكة الإنترنت.")
     else:
         # رفع على Google Drive
         upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
