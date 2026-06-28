@@ -29,6 +29,7 @@ jobs:
           JSON_PATH="${{ github.event.client_payload.json_path }}"
           echo "JSON path: $JSON_PATH"
           echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
+          echo "Upload Target: ${{ github.event.client_payload.upload_target }}"
 
           test -n "$JSON_PATH" || (echo "❌ json_path فارغ" && exit 1)
           test -f ".github/workflows/merge_script.py" || (echo "❌ merge_script.py غير موجود" && exit 1)
@@ -56,12 +57,38 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Chrome & ChromeDriver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wget gnupg unzip
+          # Install Google Chrome
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list
+          sudo apt-get update -qq
+          sudo apt-get install -y google-chrome-stable
+          # Install ChromeDriver
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
+          CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}")
+          wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+          unzip -q chromedriver_linux64.zip
+          sudo mv chromedriver /usr/local/bin/
+          sudo chmod +x /usr/local/bin/chromedriver
+          rm chromedriver_linux64.zip
+          echo "Chrome version: $(google-chrome --version)"
+          echo "ChromeDriver version: $(chromedriver --version)"
+
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp
+          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp selenium
+
+      - name: Setup Rumble cookies
+        if: github.event.client_payload.upload_target == 'rumble'
+        run: |
+          echo '${{ secrets.RUMBLE_COOKIES }}' > /tmp/cookies.json
+          echo "✅ Rumble cookies saved"
 
       - name: Run merge script
         env:
@@ -71,7 +98,9 @@ jobs:
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          JSON_PATH: ${{ github.event.client_payload.json_path }}
+          UPLOAD_TARGET: ${{ github.event.client_payload.upload_target }}
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
           PYTHONUNBUFFERED: "1"
         run: |
-          python .github/workflows/merge_script.py "$JSON_PATH"
+          python .github/workflows/merge_script.py "${{ github.event.client_payload.json_path }}"
