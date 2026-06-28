@@ -7,11 +7,11 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID          = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID            = os.environ.get("TELEGRAM_CHAT_ID")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS")
 
-# ✅ Folder ID ثابت - الفولدر اللي شاركته مع الـ Service Account
+# ✅ Folder ID - الفولدر المشارك مع الـ Service Account
 GDRIVE_FOLDER_ID = "1dE6YUqnnWNcS_sEw9Y1ejCZzT1I5yuNl"
 
 TEMP_DIR = "/tmp/drama_videos"
@@ -30,7 +30,7 @@ def send_telegram(text):
             print(f"Telegram send failed: {e}")
 
 
-# ── التحقق من المدخلات ──────────────────────────────────────────────────────
+# ── التحقق من المدخلات ─────────────────────────────────────────────
 
 if len(sys.argv) < 2:
     print("Usage: python merge_script.py <json_path>")
@@ -39,14 +39,14 @@ if len(sys.argv) < 2:
 json_path = sys.argv[1]
 
 if not os.path.exists(json_path):
-    print(f"JSON file not found: {json_path}")
+    send_telegram(f"❌ ملف JSON غير موجود: {json_path}")
     sys.exit(1)
 
 if not GDRIVE_CREDENTIALS:
     send_telegram("❌ متغير GDRIVE_CREDENTIALS غير موجود في Secrets.")
     sys.exit(1)
 
-# ── قراءة الـ JSON ──────────────────────────────────────────────────────────
+# ── قراءة الـ JSON ─────────────────────────────────────────────────
 
 with open(json_path, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -66,7 +66,7 @@ send_telegram(
     f"📦 الحلقات: {len(episodes)}"
 )
 
-# ── تحميل الحلقات ───────────────────────────────────────────────────────────
+# ── تحميل الحلقات ──────────────────────────────────────────────────
 
 list_content     = ""
 downloaded_count = 0
@@ -112,7 +112,7 @@ with open(list_file, "w", encoding="utf-8") as f:
 
 send_telegram(f"⏳ اكتمل التحميل ({downloaded_count} حلقة)، جاري الدمج بـ FFmpeg...")
 
-# ── دمج الفيديوهات ──────────────────────────────────────────────────────────
+# ── دمج الفيديوهات ─────────────────────────────────────────────────
 
 result = subprocess.run(
     [
@@ -135,7 +135,7 @@ if result.returncode != 0:
 
 send_telegram("✅ اكتمل الدمج، جاري الرفع على Google Drive...")
 
-# ── رفع على Google Drive ────────────────────────────────────────────────────
+# ── رفع على Google Drive ───────────────────────────────────────────
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -152,11 +152,16 @@ try:
 
     file_metadata = {
         "name": f"{movie_name}_Full_Movie.mp4",
-        # ✅ الفولدر المشارك مع الـ Service Account - مش root
+        # ✅ الفولدر المشارك - مش root
         "parents": [GDRIVE_FOLDER_ID]
     }
 
-    media = MediaFileUpload(final_output, mimetype="video/mp4", resumable=True)
+    media = MediaFileUpload(
+        final_output,
+        mimetype="video/mp4",
+        resumable=True,
+        chunksize=10 * 1024 * 1024  # 10MB chunks
+    )
 
     uploaded = service.files().create(
         body=file_metadata,
