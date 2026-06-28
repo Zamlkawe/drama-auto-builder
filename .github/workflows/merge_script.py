@@ -92,7 +92,7 @@ subtitle_map     = {}  # ep_num -> srt_content
 for ep in episodes:
     url    = ep.get("video_url", "")
     ep_num = ep.get("episode", "?")
-    sub_url = ep.get("subtitle_url", "")  # ✅ جديد: رابط الترجمة
+    sub_url = ep.get("subtitle_url", "")  # جديد: رابط الترجمة
 
     if not url or "http" not in str(url):
         print(f"⏭ Skipping episode {ep_num}: invalid url", flush=True)
@@ -109,7 +109,7 @@ for ep in episodes:
     print(f"⬇️ Downloading episode {ep_num}...", flush=True)
 
     try:
-        # ✅ تحميل الفيديو
+        # تحميل الفيديو
         r = requests.get(url, stream=True, verify=False, timeout=120)
         r.raise_for_status()
 
@@ -123,7 +123,7 @@ for ep in episodes:
         list_content     += f"file '{video_path}'\n"
         downloaded_count += 1
 
-        # ✅ تحميل الترجمة لو موجودة
+        # تحميل الترجمة لو موجودة
         if sub_url and "http" in str(sub_url):
             try:
                 print(f"  📝 Downloading subtitle for ep {ep_num}...", flush=True)
@@ -166,7 +166,7 @@ if subtitle_map:
 
 print("\n🔀 Starting FFmpeg merge...", flush=True)
 
-# ✅ الطريقة المحسّنة: تحويل لـ TS أولاً ثم دمج
+# الطريقة المحسّنة: تحويل لـ TS أولاً ثم دمج
 # ده بيمنع مشاكل الـ timestamps والتقطيع
 
 # خطوة 1: تحويل كل فيديو لـ TS (MPEG-TS)
@@ -240,7 +240,7 @@ if result.returncode != 0:
 if not os.path.exists(final_output):
     fail("ملف الدمج لم يُنشأ")
 
-# ✅ تنظيف الـ TS files
+# تنظيف الـ TS files
 for tsf in ts_files:
     try:
         os.remove(tsf)
@@ -276,7 +276,7 @@ try:
 
     service = build("drive", "v3", credentials=creds)
 
-    # ✅ رفع الفيديو
+    # رفع الفيديو
     file_metadata = {
         "name": f"{movie_name}_Full_Movie.mp4",
         "parents": [GDRIVE_FOLDER_ID]
@@ -299,7 +299,7 @@ try:
     video_id = uploaded.get("id")
     print(f"✅ Video uploaded: {uploaded.get('name')}", flush=True)
 
-    # ✅ رفع الترجمة لو موجودة
+    # رفع الترجمة لو موجودة
     srt_link = None
     if merged_srt and os.path.exists(merged_srt):
         srt_metadata = {
@@ -322,7 +322,7 @@ try:
         srt_link = f"https://drive.google.com/file/d/{srt_uploaded.get('id')}/view"
         print(f"✅ Subtitle uploaded: {srt_uploaded.get('name')}", flush=True)
 
-    # ✅ صلاحية Public
+    # صلاحية Public
     service.permissions().create(
         fileId=video_id,
         body={"type": "anyone", "role": "reader"}
@@ -442,7 +442,7 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps):
         if len(p) == 2:
             return int((int(p[0]) * 60 + float(p[1])) * 1000)
         elif len(p) >= 3:
-            return int((int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])) * 1000))
+            return int((int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])) * 1000)
         return 0
 
     def ms_to_srt(ms):
