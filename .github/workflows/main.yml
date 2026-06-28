@@ -39,4 +39,4 @@ jobs:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           JSON_PATH: ${{ github.event.client_payload.json_path }}
         run: |
-          python merge_script-2.py "$JSON_PATH"
+          python merge_script.py "$JSON_PATH"
