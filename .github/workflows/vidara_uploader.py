@@ -9,7 +9,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VIDARA_API_KEY = os.environ.get("VIDARA_API_KEY", "")
 VIDARA_API_BASE = "https://api.vidara.so/v1"
 
-
 def get_upload_server():
     try:
         resp = requests.get(
@@ -24,122 +23,113 @@ def get_upload_server():
         print(f"⚠️ Could not get upload server: {e}", flush=True)
     return None
 
-
 def upload_to_temp_host(file_path):
     """
-    رفع ملف الترجمة (SRT) إلى مستضيف عام وإرجاع الرابط المباشر.
-    يحاول عدة خدمات بالترتيب مع إضافة User-Agent لتجنب الرفض.
+    Upload SRT to a public host and return direct URL.
+    Tries multiple reliable hosts in order.
     """
-    simple_name = "subtitle.srt"
+    simple_name = "subtitle.srt"  # ✅ اسم إنجليزي ثابت
     size_kb = os.path.getsize(file_path) / 1024
     print(f"   📂 SRT size: {size_kb:.1f} KB", flush=True)
 
-    # User-Agent مهم لتجنب الرفض من بعض الخدمات
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-
-    # ── الخدمة 1: rentry.co (الأفضل للنصوص) ──
+    # ── Host 1: tmpfiles.org ────────────────────────────
     try:
-        print("   ↗ Trying rentry.co...", flush=True)
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        resp = requests.post(
-            "https://rentry.co/api/new",
-            json={"text": content},
-            headers=headers,
-            timeout=60
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("url"):
-                url = data["url"]
-                print(f"   ✅ rentry.co → {url}", flush=True)
-                return url
-        print(f"   ⚠️ rentry.co failed: {resp.status_code} – {resp.text[:100]}", flush=True)
-    except Exception as e:
-        print(f"   ⚠️ rentry.co error: {e}", flush=True)
-
-    # ── الخدمة 2: 0x0.st ──
-    try:
-        print("   ↗ Trying 0x0.st...", flush=True)
+        print("   ↗ Trying tmpfiles.org...", flush=True)
         with open(file_path, "rb") as f:
             resp = requests.post(
-                "https://0x0.st",
+                "https://tmpfiles.org/api/v1/upload",
                 files={"file": (simple_name, f, "text/plain; charset=utf-8")},
-                headers=headers,
                 timeout=60
             )
-        if resp.status_code == 200 and resp.text.strip().startswith("http"):
-            url = resp.text.strip()
-            print(f"   ✅ 0x0.st → {url}", flush=True)
+        data = resp.json()
+        if data.get("status") == "success":
+            # tmpfiles returns https://tmpfiles.org/123/file.srt
+            # direct link is https://tmpfiles.org/dl/123/file.srt
+            url = data["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/", 1)
+            print(f"   ✅ tmpfiles.org → {url}", flush=True)
             return url
-        print(f"   ⚠️ 0x0.st failed: {resp.status_code} – {resp.text[:100]}", flush=True)
+        print(f"   ⚠️ tmpfiles.org failed: {data}", flush=True)
     except Exception as e:
-        print(f"   ⚠️ 0x0.st error: {e}", flush=True)
+        print(f"   ⚠️ tmpfiles.org error: {e}", flush=True)
 
-    # ── الخدمة 3: catbox.moe ──
+    # ── Host 2: pixeldrain.com ──────────────────────────
     try:
-        print("   ↗ Trying catbox.moe...", flush=True)
+        print("   ↗ Trying pixeldrain.com...", flush=True)
         with open(file_path, "rb") as f:
             resp = requests.post(
-                "https://catbox.moe/user/api.php",
-                data={"reqtype": "fileupload"},
+                "https://pixeldrain.com/api/file",
+                files={"file": (simple_name, f, "text/plain; charset=utf-8")},
+                timeout=60
+            )
+        data = resp.json()
+        if data.get("id"):
+            url = f"https://pixeldrain.com/u/{data['id']}"
+            print(f"   ✅ pixeldrain.com → {url}", flush=True)
+            return url
+        print(f"   ⚠️ pixeldrain.com failed: {data}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ pixeldrain.com error: {e}", flush=True)
+
+    # ── Host 3: litterbox.catbox.moe ────────────────────
+    try:
+        print("   ↗ Trying litterbox.catbox.moe...", flush=True)
+        with open(file_path, "rb") as f:
+            resp = requests.post(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                data={"reqtype": "fileupload", "time": "72h"},
                 files={"fileToUpload": (simple_name, f, "text/plain; charset=utf-8")},
-                headers=headers,
                 timeout=120
             )
         if resp.status_code == 200 and resp.text.strip().startswith("http"):
             url = resp.text.strip()
-            print(f"   ✅ catbox.moe → {url}", flush=True)
+            print(f"   ✅ litterbox.catbox.moe → {url}", flush=True)
             return url
-        print(f"   ⚠️ catbox.moe failed: {resp.status_code} – {resp.text[:100]}", flush=True)
+        print(f"   ⚠️ litterbox failed: {resp.status_code} – {resp.text[:100]}", flush=True)
     except Exception as e:
-        print(f"   ⚠️ catbox.moe error: {e}", flush=True)
+        print(f"   ⚠️ litterbox error: {e}", flush=True)
 
-    # ── الخدمة 4: file.io ──
+    # ── Host 4: envs.sh ─────────────────────────────────
+    try:
+        print("   ↗ Trying envs.sh...", flush=True)
+        with open(file_path, "rb") as f:
+            resp = requests.post(
+                "https://envs.sh",
+                files={"file": (simple_name, f, "text/plain; charset=utf-8")},
+                timeout=60
+            )
+        if resp.status_code == 200 and resp.text.strip().startswith("http"):
+            url = resp.text.strip()
+            print(f"   ✅ envs.sh → {url}", flush=True)
+            return url
+        print(f"   ⚠️ envs.sh failed: {resp.status_code} – {resp.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ envs.sh error: {e}", flush=True)
+
+    # ── Host 5: file.io ─────────────────────────────────
     try:
         print("   ↗ Trying file.io...", flush=True)
         with open(file_path, "rb") as f:
             resp = requests.post(
                 "https://file.io/?expires=3d",
                 files={"file": (simple_name, f, "text/plain; charset=utf-8")},
-                headers=headers,
                 timeout=60
             )
         if resp.status_code == 200:
-            data = resp.json()
-            if data.get("success") and data.get("link"):
-                url = data["link"]
-                print(f"   ✅ file.io → {url}", flush=True)
-                return url
-        print(f"   ⚠️ file.io failed: {resp.status_code} – {resp.text[:100]}", flush=True)
+            try:
+                data = resp.json()
+                if data.get("success") and data.get("link"):
+                    url = data["link"]
+                    print(f"   ✅ file.io → {url}", flush=True)
+                    return url
+            except:
+                print(f"   ⚠️ file.io invalid JSON: {resp.text[:100]}", flush=True)
+        else:
+            print(f"   ⚠️ file.io failed: {resp.status_code} – {resp.text[:100]}", flush=True)
     except Exception as e:
         print(f"   ⚠️ file.io error: {e}", flush=True)
 
-    # ── الخدمة 5: tmp.ninja ──
-    try:
-        print("   ↗ Trying tmp.ninja...", flush=True)
-        with open(file_path, "rb") as f:
-            resp = requests.post(
-                "https://tmp.ninja/api/upload",
-                files={"file": (simple_name, f, "text/plain; charset=utf-8")},
-                headers=headers,
-                timeout=60
-            )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("url"):
-                url = data["url"]
-                print(f"   ✅ tmp.ninja → {url}", flush=True)
-                return url
-        print(f"   ⚠️ tmp.ninja failed: {resp.status_code} – {resp.text[:100]}", flush=True)
-    except Exception as e:
-        print(f"   ⚠️ tmp.ninja error: {e}", flush=True)
-
     print("   ❌ All temp hosts failed!", flush=True)
     return None
-
 
 def upload_subtitle_to_vidara(filecode, srt_path, max_retries=3):
     """Upload SRT subtitle to vidara.so via /upload/sub endpoint with retry"""
@@ -163,10 +153,10 @@ def upload_subtitle_to_vidara(filecode, srt_path, max_retries=3):
             resp = requests.get(
                 f"{VIDARA_API_BASE}/upload/sub",
                 params={
-                    "api_key":  VIDARA_API_KEY,
+                    "api_key": VIDARA_API_KEY,
                     "filecode": filecode,
                     "sub_lang": "Arabic",
-                    "sub_url":  sub_url,
+                    "sub_url": sub_url,
                 },
                 timeout=60,
             )
@@ -190,7 +180,6 @@ def upload_subtitle_to_vidara(filecode, srt_path, max_retries=3):
     print("   ❌ All subtitle upload attempts failed", flush=True)
     return False
 
-
 def upload_video_to_vidara(video_path, title="", srt_path=None):
     """Upload video to vidara.so via multipart upload, then attach subtitle"""
     if not VIDARA_API_KEY:
@@ -213,9 +202,9 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
     try:
         print("⬆️ Sending video file...", flush=True)
         with open(video_path, "rb") as f:
-            files = {"file": ("video.mp4", f, "video/mp4")}
-            data  = {"api_key": VIDARA_API_KEY}
-            resp  = requests.post(
+            files = {"file": ("video.mp4", f, "video/mp4")}  # ✅ اسم ثابت
+            data = {"api_key": VIDARA_API_KEY}
+            resp = requests.post(
                 upload_server,
                 data=data,
                 files=files,
@@ -232,10 +221,10 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
 
         raw_filecode = result["filecode"]
         if raw_filecode.startswith("http"):
-            video_url      = raw_filecode
+            video_url = raw_filecode
             filecode_clean = raw_filecode.rstrip("/").split("/")[-1]
         else:
-            video_url      = result.get("url", f"https://vidara.so/v/{raw_filecode}")
+            video_url = result.get("url", f"https://vidara.so/v/{raw_filecode}")
             filecode_clean = raw_filecode
 
         print(f"✅ Video uploaded → filecode: {filecode_clean}", flush=True)
@@ -243,7 +232,7 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
 
         # Attach subtitle if provided
         if srt_path and os.path.exists(srt_path):
-            wait_sec = 15
+            wait_sec = 15  # ✅ 15 ثانية بدل 3
             print(f"\n⏳ Waiting {wait_sec}s for Vidara to process the video...", flush=True)
             time.sleep(wait_sec)
             upload_subtitle_to_vidara(filecode_clean, srt_path)
@@ -254,26 +243,24 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
                 print("ℹ️ No subtitle to upload", flush=True)
 
         return {
-            "url":      video_url,
+            "url": video_url,
             "filecode": filecode_clean,
-            "title":    result.get("title", title),
+            "title": result.get("title", title),
         }
 
     except Exception as e:
         print(f"❌ Upload error: {e}", flush=True)
         return None
 
-
 # ── CLI entry point ────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python vidara_uploader.py <video_path> [title] [srt_path]")
         sys.exit(1)
 
-    vp  = sys.argv[1]
+    vp = sys.argv[1]
     ttl = sys.argv[2] if len(sys.argv) > 2 else ""
-    sp  = sys.argv[3] if len(sys.argv) > 3 else None
+    sp = sys.argv[3] if len(sys.argv) > 3 else None
 
     res = upload_video_to_vidara(vp, ttl, sp)
     if res:
