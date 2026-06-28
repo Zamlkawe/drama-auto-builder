@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import time
@@ -12,7 +11,6 @@ VIDARA_API_BASE = "https://api.vidara.so/v1"
 
 
 def get_upload_server():
-    """Get the current upload server URL"""
     try:
         resp = requests.get(
             f"{VIDARA_API_BASE}/upload/server",
@@ -28,78 +26,123 @@ def get_upload_server():
 
 
 def upload_to_temp_host(file_path):
-    """Upload a file to catbox.moe and return the direct download URL"""
+    """
+    Upload SRT to a public host and return direct URL.
+    Tries 3 hosts in order. Uses fixed English filename to avoid Arabic encoding issues.
+    """
+    simple_name = "subtitle.srt"  # ✅ اسم إنجليزي ثابت — مش عربي
+    size_kb = os.path.getsize(file_path) / 1024
+    print(f"   📂 SRT size: {size_kb:.1f} KB", flush=True)
+
+    # ── Host 1: 0x0.st ────────────────────────────────────
     try:
+        print("   ↗ Trying 0x0.st...", flush=True)
         with open(file_path, "rb") as f:
-            files = {"fileToUpload": (os.path.basename(file_path), f)}
-            data = {"reqtype": "fileupload"}
-            # استخدام catbox لضمان الحصول على رابط مباشر 100% للـ SRT
+            resp = requests.post(
+                "https://0x0.st",
+                files={"file": (simple_name, f, "text/plain; charset=utf-8")},
+                timeout=60
+            )
+        if resp.status_code == 200 and resp.text.strip().startswith("http"):
+            url = resp.text.strip()
+            print(f"   ✅ 0x0.st → {url}", flush=True)
+            return url
+        print(f"   ⚠️ 0x0.st failed: {resp.status_code} – {resp.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ 0x0.st error: {e}", flush=True)
+
+    # ── Host 2: catbox.moe ────────────────────────────────
+    try:
+        print("   ↗ Trying catbox.moe...", flush=True)
+        with open(file_path, "rb") as f:
             resp = requests.post(
                 "https://catbox.moe/user/api.php",
-                data=data,
-                files=files,
+                data={"reqtype": "fileupload"},
+                files={"fileToUpload": (simple_name, f, "text/plain; charset=utf-8")},
                 timeout=120
             )
-
-        if resp.status_code == 200 and resp.text.startswith("http"):
+        if resp.status_code == 200 and resp.text.strip().startswith("http"):
             url = resp.text.strip()
-            print(f"   ✅ Temp URL: {url}", flush=True)
+            print(f"   ✅ catbox.moe → {url}", flush=True)
             return url
-        else:
-            print(f"   ❌ Temp upload failed. Status: {resp.status_code}, Response: {resp.text}", flush=True)
+        print(f"   ⚠️ catbox.moe failed: {resp.status_code} – {resp.text[:100]}", flush=True)
     except Exception as e:
-        print(f"   ❌ Temp upload exception: {e}", flush=True)
+        print(f"   ⚠️ catbox.moe error: {e}", flush=True)
+
+    # ── Host 3: file.io ───────────────────────────────────
+    try:
+        print("   ↗ Trying file.io...", flush=True)
+        with open(file_path, "rb") as f:
+            resp = requests.post(
+                "https://file.io/?expires=3d",
+                files={"file": (simple_name, f, "text/plain; charset=utf-8")},
+                timeout=60
+            )
+        data = resp.json()
+        if data.get("success") and data.get("link"):
+            url = data["link"]
+            print(f"   ✅ file.io → {url}", flush=True)
+            return url
+        print(f"   ⚠️ file.io failed: {data}", flush=True)
+    except Exception as e:
+        print(f"   ⚠️ file.io error: {e}", flush=True)
+
+    print("   ❌ All temp hosts failed!", flush=True)
     return None
 
 
-def upload_subtitle_to_vidara(filecode, srt_path):
-    """Upload SRT subtitle to vidara.so via upload/sub endpoint"""
+def upload_subtitle_to_vidara(filecode, srt_path, max_retries=3):
+    """Upload SRT subtitle to vidara.so via /upload/sub endpoint with retry"""
     if not os.path.exists(srt_path):
-        print(f"   ⚠️ Subtitle file not found: {srt_path}", flush=True)
+        print(f"   ⚠️ SRT file not found: {srt_path}", flush=True)
         return False
 
     print(f"\n📝 Uploading subtitle to vidara.so...", flush=True)
-    print(f"   File: {srt_path}", flush=True)
+    print(f"   Filecode: {filecode}", flush=True)
 
-    # Step 1: Upload SRT to get a direct public URL
-    print(f"   Step 1: Uploading to temporary direct-link host...", flush=True)
+    # Step 1: Get a public direct URL for the SRT
     sub_url = upload_to_temp_host(srt_path)
-
     if not sub_url:
-        print(f"   ❌ Failed to get public URL for subtitle", flush=True)
+        print("   ❌ Cannot get public URL for subtitle — skipping", flush=True)
         return False
 
-    # Step 2: Send URL to vidara.so upload/sub
-    print(f"   Step 2: Sending URL to vidara.so API...", flush=True)
-    try:
-        resp = requests.get(
-            f"{VIDARA_API_BASE}/upload/sub",
-            params={
-                "api_key": VIDARA_API_KEY,
-                "filecode": filecode,
-                "sub_lang": "Arabic", # تم التعديل لتظهر الترجمة كعربية
-                "sub_url": sub_url
-            },
-            timeout=60
-        )
+    # Step 2: Call vidara /upload/sub with retry
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"   → Calling vidara API (attempt {attempt}/{max_retries})...", flush=True)
+            resp = requests.get(
+                f"{VIDARA_API_BASE}/upload/sub",
+                params={
+                    "api_key":  VIDARA_API_KEY,
+                    "filecode": filecode,
+                    "sub_lang": "Arabic",
+                    "sub_url":  sub_url,
+                },
+                timeout=60,
+            )
+            data = resp.json()
+            print(f"   API response: {data}", flush=True)
 
-        data = resp.json()
-        print(f"   Response: {data}", flush=True)
+            if data.get("status") == 200:
+                print("   ✅ Subtitle attached to Vidara video!", flush=True)
+                return True
 
-        if data.get("status") == 200:
-            print(f"   ✅ Subtitle uploaded successfully to Vidara!", flush=True)
-            return True
-        else:
-            print(f"   ⚠️ Subtitle upload returned error: {data}", flush=True)
-            return False
+            print(f"   ⚠️ Attempt {attempt} returned status: {data.get('status')} – {data}", flush=True)
 
-    except Exception as e:
-        print(f"   ❌ Subtitle upload failed: {e}", flush=True)
-        return False
+        except Exception as e:
+            print(f"   ❌ Attempt {attempt} exception: {e}", flush=True)
+
+        if attempt < max_retries:
+            wait = 5 * attempt  # 5s, 10s
+            print(f"   ⏳ Retrying in {wait}s...", flush=True)
+            time.sleep(wait)
+
+    print("   ❌ All subtitle upload attempts failed", flush=True)
+    return False
 
 
 def upload_video_to_vidara(video_path, title="", srt_path=None):
-    """Upload video to vidara.so via multipart upload"""
+    """Upload video to vidara.so via multipart upload, then attach subtitle"""
     if not VIDARA_API_KEY:
         print("❌ VIDARA_API_KEY not set", flush=True)
         return None
@@ -108,82 +151,83 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
         print(f"❌ Video file not found: {video_path}", flush=True)
         return None
 
-    print(f"\n📤 Uploading to vidara.so...", flush=True)
-    print(f"   Video: {video_path}", flush=True)
+    size_gb = os.path.getsize(video_path) / (1024 ** 3)
+    print(f"\n📤 Uploading to vidara.so ({size_gb:.2f} GB)...", flush=True)
 
-    # Get upload server
     upload_server = get_upload_server()
     if not upload_server:
         print("❌ No upload server available", flush=True)
         return None
+    print(f"   Server: {upload_server}", flush=True)
 
-    print(f"   Upload server: {upload_server}", flush=True)
-
-    # Upload video
     try:
-        print(f"⬆️ Uploading video file...", flush=True)
-
+        print("⬆️ Sending video file...", flush=True)
         with open(video_path, "rb") as f:
-            files = {"file": (os.path.basename(video_path), f, "video/mp4")}
-            data = {"api_key": VIDARA_API_KEY}
-
-            resp = requests.post(
+            files = {"file": ("video.mp4", f, "video/mp4")}  # ✅ اسم ثابت
+            data  = {"api_key": VIDARA_API_KEY}
+            resp  = requests.post(
                 upload_server,
                 data=data,
                 files=files,
-                timeout=1200, # زيادة وقت الـ Timeout للملفات الكبيرة
-                verify=False
+                timeout=3600,   # 1 hour for large files
+                verify=False,
             )
 
         result = resp.json()
-        print(f"   Response: {result}", flush=True)
+        print(f"   Upload response: {result}", flush=True)
 
-        if result and result.get("filecode"):
-            filecode = result["filecode"]
-            if filecode.startswith("http"):
-                video_url = filecode
-                filecode_clean = filecode.split("/")[-1]
-            else:
-                video_url = result.get("url", f"https://vidara.so/v/{filecode}")
-                filecode_clean = filecode
-
-            print(f"✅ Video uploaded!", flush=True)
-            print(f"   URL: {video_url}", flush=True)
-            print(f"   Filecode: {filecode_clean}", flush=True)
-
-            # Upload subtitle if provided
-            if srt_path and os.path.exists(srt_path):
-                # تأخير 3 ثواني لضمان تسجيل الفيديو في قاعدة بيانات Vidara قبل رفع الترجمة
-                time.sleep(3) 
-                upload_subtitle_to_vidara(filecode_clean, srt_path)
-
-            return {
-                "url": video_url,
-                "filecode": filecode_clean,
-                "title": result.get("title", title)
-            }
-        else:
-            print(f"❌ Upload failed: {result}", flush=True)
+        if not result or not result.get("filecode"):
+            print(f"❌ Upload failed — no filecode in response: {result}", flush=True)
             return None
+
+        raw_filecode = result["filecode"]
+        if raw_filecode.startswith("http"):
+            video_url      = raw_filecode
+            filecode_clean = raw_filecode.rstrip("/").split("/")[-1]
+        else:
+            video_url      = result.get("url", f"https://vidara.so/v/{raw_filecode}")
+            filecode_clean = raw_filecode
+
+        print(f"✅ Video uploaded → filecode: {filecode_clean}", flush=True)
+        print(f"   Watch URL: {video_url}", flush=True)
+
+        # Attach subtitle if provided
+        if srt_path and os.path.exists(srt_path):
+            wait_sec = 15  # ✅ 15 ثانية بدل 3
+            print(f"\n⏳ Waiting {wait_sec}s for Vidara to process the video...", flush=True)
+            time.sleep(wait_sec)
+            upload_subtitle_to_vidara(filecode_clean, srt_path)
+        else:
+            if srt_path:
+                print(f"⚠️ SRT path given but file doesn't exist: {srt_path}", flush=True)
+            else:
+                print("ℹ️ No subtitle to upload", flush=True)
+
+        return {
+            "url":      video_url,
+            "filecode": filecode_clean,
+            "title":    result.get("title", title),
+        }
 
     except Exception as e:
         print(f"❌ Upload error: {e}", flush=True)
         return None
 
 
+# ── CLI entry point ────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python vidara_uploader.py <video_path> [title] [srt_path]")
         sys.exit(1)
 
-    video_path = sys.argv[1]
-    title = sys.argv[2] if len(sys.argv) > 2 else ""
-    srt_path = sys.argv[3] if len(sys.argv) > 3 else None
+    vp  = sys.argv[1]
+    ttl = sys.argv[2] if len(sys.argv) > 2 else ""
+    sp  = sys.argv[3] if len(sys.argv) > 3 else None
 
-    result = upload_video_to_vidara(video_path, title, srt_path)
-
-    if result:
-        print(f"\nSUCCESS: {result['url']}")
+    res = upload_video_to_vidara(vp, ttl, sp)
+    if res:
+        print(f"\nSUCCESS: {res['url']}")
         sys.exit(0)
     else:
         print("\nFAILED")
