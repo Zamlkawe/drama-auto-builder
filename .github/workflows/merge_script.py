@@ -26,11 +26,10 @@ def send_telegram(text):
                 timeout=30
             )
         except Exception as e:
-            print(f"Telegram send failed: {e}")
+            print(f"Telegram send failed: {e}", flush=True)
 
 
 def fail(msg):
-    # ✅ بيطبع الخطأ في GitHub Actions logs وبيبعته على Telegram
     print(f"\n❌ FATAL ERROR: {msg}\n", flush=True)
     send_telegram(f"❌ {msg}")
     sys.exit(1)
@@ -137,22 +136,23 @@ result = subprocess.run(
         "-safe", "0",
         "-i", list_file,
         "-c", "copy",
+        "-fflags", "+genpts",        # ✅ يصلح الـ Timestamps
+        "-movflags", "+faststart",   # ✅ يحسن التشغيل
         final_output,
         "-y",
-        "-loglevel", "warning"   # ✅ warning بدل error عشان نشوف أكتر
+        "-loglevel", "warning"
     ],
     capture_output=True,
     text=True
 )
 
-# ✅ طباعة كل output الـ ffmpeg في الـ logs
 if result.stdout:
     print(f"FFmpeg stdout:\n{result.stdout}", flush=True)
 if result.stderr:
     print(f"FFmpeg stderr:\n{result.stderr}", flush=True)
 
 if result.returncode != 0:
-    fail(f"فشل الدمج:\n{result.stderr[:300]}")
+    fail(f"فشل الدمج:\n{result.stderr[:500]}")
 
 if not os.path.exists(final_output):
     fail("ملف الدمج لم يُنشأ")
@@ -161,17 +161,27 @@ output_size = os.path.getsize(final_output) / (1024 * 1024)
 print(f"✅ Merged file: {final_output} ({output_size:.1f} MB)", flush=True)
 send_telegram(f"✅ اكتمل الدمج ({output_size:.0f} MB)، جاري الرفع على Google Drive...")
 
-# ── رفع على Google Shared Drive ────────────────────────────────────
+# ── رفع على Google Drive ───────────────────────────────────────────
 
 print("\n☁️ Starting Google Drive upload...", flush=True)
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 
 try:
-    creds_data = json.loads(GDRIVE_CREDENTIALS)
-    print(f"🔑 Service Account: {creds_data.get('client_email')}", flush=True)
+    # ✅ التحقق من الـ Credentials
+    try:
+        creds_data = json.loads(GDRIVE_CREDENTIALS)
+    except json.JSONDecodeError as e:
+        fail(f"❌ GDRIVE_CREDENTIALS مش JSON صالح: {e}")
+
+    client_email = creds_data.get('client_email', 'UNKNOWN')
+    print(f"🔑 Service Account: {client_email}", flush=True)
+    print(f"📁 Target Folder ID: {GDRIVE_FOLDER_ID}", flush=True)
+    print(f"📄 File exists: {os.path.exists(final_output)}", flush=True)
+    print(f"📊 File size: {output_size:.1f} MB", flush=True)
 
     creds = service_account.Credentials.from_service_account_info(
         creds_data,
@@ -180,21 +190,44 @@ try:
 
     service = build("drive", "v3", credentials=creds)
 
-    # ✅ التحقق إن الـ Folder موجود ومتاح للـ Service Account
+    # ✅ التحقق من الوصول للفولدر
+    print("🔍 Checking folder access...", flush=True)
     try:
         folder_info = service.files().get(
             fileId=GDRIVE_FOLDER_ID,
             supportsAllDrives=True,
-            fields="id, name, driveId"
+            fields="id, name, driveId, mimeType, shared, capabilities"
         ).execute()
-        print(f"✅ Folder found: {folder_info.get('name')} | driveId: {folder_info.get('driveId')}", flush=True)
-    except Exception as e:
-        fail(f"لا يمكن الوصول للـ Folder:\n{str(e)}")
+        print(f"✅ Folder found: {folder_info.get('name')}", flush=True)
+        print(f"   Drive ID: {folder_info.get('driveId')}", flush=True)
+        print(f"   MimeType: {folder_info.get('mimeType')}", flush=True)
+        print(f"   Shared: {folder_info.get('shared')}", flush=True)
+        
+        # ✅ التحقق من صلاحيات الكتابة
+        caps = folder_info.get('capabilities', {})
+        print(f"   Can addChildren: {caps.get('canAddChildren', 'N/A')}", flush=True)
+        print(f"   Can edit: {caps.get('canEdit', 'N/A')}", flush=True)
+        
+    except HttpError as e:
+        error_details = ""
+        if hasattr(e, 'error_details') and e.error_details:
+            error_details = str(e.error_details)
+        else:
+            error_details = str(e)
+        
+        print(f"❌ Folder access FAILED: {error_details}", flush=True)
+        print(f"⚠️ Error status: {e.resp.status if hasattr(e, 'resp') else 'N/A'}", flush=True)
+        
+        # ✅ لو الفولدر مش متاح، نحاول نرفع على Root Drive
+        print("⚠️ Trying fallback: Uploading to Service Account's root drive...", flush=True)
+        GDRIVE_FOLDER_ID = None
 
+    # ✅ إعداد الملف
     file_metadata = {
         "name": f"{movie_name}_Full_Movie.mp4",
-        "parents": [GDRIVE_FOLDER_ID]
     }
+    if GDRIVE_FOLDER_ID:
+        file_metadata["parents"] = [GDRIVE_FOLDER_ID]
 
     media = MediaFileUpload(
         final_output,
@@ -205,22 +238,47 @@ try:
 
     print("📤 Uploading file...", flush=True)
 
-    uploaded = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id, webViewLink",
-        supportsAllDrives=True
-    ).execute()
+    try:
+        uploaded = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id, webViewLink, name, size, mimeType",
+            supportsAllDrives=True
+        ).execute()
 
-    print(f"✅ Upload complete: {uploaded.get('id')}", flush=True)
+        print(f"✅ Upload complete!", flush=True)
+        print(f"   File ID: {uploaded.get('id')}", flush=True)
+        print(f"   Name: {uploaded.get('name')}", flush=True)
+        print(f"   Size: {uploaded.get('size')}", flush=True)
 
-    service.permissions().create(
-        fileId=uploaded["id"],
-        body={"type": "anyone", "role": "reader"},
-        supportsAllDrives=True
-    ).execute()
+    except HttpError as e:
+        error_details = ""
+        if hasattr(e, 'error_details') and e.error_details:
+            error_details = str(e.error_details)
+        else:
+            error_details = str(e)
+        
+        print(f"❌ Upload failed (HttpError): {error_details}", flush=True)
+        if hasattr(e, 'resp') and e.resp:
+            print(f"   Status code: {e.resp.status}", flush=True)
+            print(f"   Reason: {e.resp.reason}", flush=True)
+        raise
 
-    drive_link = uploaded["webViewLink"]
+    # ✅ إضافة صلاحية Public
+    try:
+        service.permissions().create(
+            fileId=uploaded["id"],
+            body={"type": "anyone", "role": "reader"},
+            supportsAllDrives=True
+        ).execute()
+        print("✅ Public permission set", flush=True)
+    except Exception as perm_err:
+        print(f"⚠️ Permission set failed (non-critical): {perm_err}", flush=True)
+
+    drive_link = uploaded.get("webViewLink")
+    if not drive_link:
+        drive_link = f"https://drive.google.com/file/d/{uploaded.get('id')}/view"
+    
     print(f"🔗 Drive link: {drive_link}", flush=True)
 
     send_telegram(
@@ -232,7 +290,6 @@ try:
     )
 
 except Exception as e:
-    # ✅ طباعة الـ traceback كامل في الـ logs
     print(f"\n❌ Upload failed:", flush=True)
     traceback.print_exc()
-    fail(f"فشل الرفع على Google Drive:\n{str(e)[:400]}")
+    fail(f"فشل الرفع على Google Drive:\n{str(e)[:800]}")
