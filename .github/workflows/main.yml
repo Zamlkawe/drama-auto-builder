@@ -31,8 +31,6 @@ jobs:
           echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
 
           test -n "$JSON_PATH" || (echo "❌ json_path فارغ" && exit 1)
-
-          # ✅ المسار الصحيح لـ merge_script.py
           test -f ".github/workflows/merge_script.py" || (echo "❌ merge_script.py غير موجود" && exit 1)
 
           FILE_FOUND=false
@@ -56,7 +54,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
@@ -72,5 +70,4 @@ jobs:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           JSON_PATH: ${{ github.event.client_payload.json_path }}
         run: |
-          # ✅ المسار الصحيح لـ merge_script.py
           python .github/workflows/merge_script.py "$JSON_PATH"
