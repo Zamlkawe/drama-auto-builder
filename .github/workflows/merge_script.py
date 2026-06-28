@@ -24,7 +24,7 @@ TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 
-# ── Telegram Helper ────────────────────────────────────────────────
+# -- Telegram Helper ------------------------------------------------
 
 def send_telegram(text):
     if TELEGRAM_TOKEN and CHAT_ID:
@@ -39,9 +39,7 @@ def send_telegram(text):
 
 
 def fail(msg):
-    print(f"
-❌ FATAL ERROR: {msg}
-", flush=True)
+    print(f"\n❌ FATAL ERROR: {msg}\n", flush=True)
     send_telegram(f"❌ {msg}")
     sys.exit(1)
 
@@ -57,18 +55,13 @@ def safe_delete(filepath):
     return False
 
 
-# ── Subtitle Helpers ─────────────────────────────────────────────
+# -- Subtitle Helpers -----------------------------------------------
 
 def normalize_subtitles(text):
     if not text:
         return ""
-    text = text.replace('﻿', '').replace('
-', '
-').replace('
-', '
-')
-    lines = text.split('
-')
+    text = text.replace('\ufeff', '').replace('\r\n', '\n').replace('\r', '\n')
+    lines = text.split('\n')
 
     srt_blocks = []
     current_block_lines = []
@@ -121,8 +114,7 @@ def normalize_subtitles(text):
         if text_lines:
             output.extend([str(i), f"{start} --> {end}"] + text_lines + [""])
 
-    return "
-".join(output).strip()
+    return "\n".join(output).strip()
 
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
@@ -171,9 +163,7 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
             with open(srt_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            content = content.replace('
-', '
-')
+            content = content.replace('\r\n', '\n')
             matches = list(re.finditer(
                 r'(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)\s*-->\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)',
                 content
@@ -185,24 +175,20 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
 
                 start_text_idx = match.end()
                 if i + 1 < len(matches):
-                    end_text_idx = content.rfind('
-', start_text_idx, matches[i + 1].start())
+                    end_text_idx = content.rfind('\n', start_text_idx, matches[i + 1].start())
                     if end_text_idx <= start_text_idx:
                         end_text_idx = matches[i + 1].start()
                 else:
                     end_text_idx = len(content)
 
                 raw_text = content[start_text_idx:end_text_idx].strip()
-                text_lines = [l.strip() for l in raw_text.split('
-') if l.strip()]
+                text_lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
                 if text_lines and text_lines[-1].isdigit():
                     text_lines = text_lines[:-1]
 
-                clean_text = '
-'.join(text_lines).strip()
+                clean_text = '\n'.join(text_lines).strip()
                 if clean_text:
-                    all_entries.append('
-'.join([
+                    all_entries.append('\n'.join([
                         str(global_index),
                         f"{ms_to_srt(s_ms)} --> {ms_to_srt(e_ms)}",
                         clean_text
@@ -215,18 +201,16 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
 
     if all_entries:
         with open(merged_path, "w", encoding="utf-8") as f:
-            f.write('
-
-'.join(all_entries))
+            f.write('\n\n'.join(all_entries))
         return merged_path
 
     return None
 
 
-# ── Download Helpers ─────────────────────────────────────────────
+# -- Download Helpers -----------------------------------------------
 
 def download_with_ytdlp(url, output_path, ep_num):
-    """تحميل باستخدام yt-dlp للـ HLS/m3u8"""
+    """Download using yt-dlp for HLS/m3u8"""
     try:
         cmd = [
             "yt-dlp",
@@ -319,7 +303,7 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     return {"ep": ep_num_int, "path": video_path}
 
 
-# ── Vidara Upload ────────────────────────────────────────────────
+# -- Vidara Upload --------------------------------------------------
 
 def upload_to_vidara(video_path, title, srt_path=None):
     """Upload video to vidara.so via API"""
@@ -332,12 +316,11 @@ def upload_to_vidara(video_path, title, srt_path=None):
         return None
 
 
-# ── Google Drive Upload ────────────────────────────────────────────
+# -- Google Drive Upload --------------------------------------------
 
 def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size):
     """Upload to Google Drive"""
-    print("
-☁️ Starting Google Drive upload...", flush=True)
+    print("\n☁️ Starting Google Drive upload...", flush=True)
 
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -377,17 +360,10 @@ def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_coun
 
         drive_link = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{video_id}/view"
 
-        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*
-
-🎬 *{data.get('series_title', 'Unknown')}*
-📦 الحلقات: {downloaded_count}
-📁 الحجم: {output_size:.0f} MB"
+        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
         if srt_link:
-            msg += f"
-📝 [ملف الترجمة]({srt_link})"
-        msg += f"
-
-🔗 [رابط المشاهدة]({drive_link})"
+            msg += f"\n📝 [ملف الترجمة]({srt_link})"
+        msg += f"\n\n🔗 [رابط المشاهدة]({drive_link})"
 
         send_telegram(msg)
         print(f"🔗 Drive link: {drive_link}", flush=True)
@@ -395,12 +371,11 @@ def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_coun
 
     except Exception as e:
         traceback.print_exc()
-        fail(f"فشل الرفع على Google Drive:
-{str(e)[:1000]}")
+        fail(f"فشل الرفع على Google Drive:\n{str(e)[:1000]}")
         return None
 
 
-# ── MAIN ─────────────────────────────────────────────────────────
+# -- MAIN -----------------------------------------------------------
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -439,19 +414,15 @@ if __name__ == "__main__":
 
     target_name = "vidara.so 📺" if UPLOAD_TARGET == "vidara" else "Google Drive ☁️"
     send_telegram(
-        f"🚀 *GitHub Actions* بدأ العمل!
-"
-        f"🎬 المسلسل: *{data.get('series_title', 'Unknown')}*
-"
-        f"📦 الحلقات: {len(episodes)}
-"
+        f"🚀 *GitHub Actions* بدأ العمل!\n"
+        f"🎬 المسلسل: *{data.get('series_title', 'Unknown')}*\n"
+        f"📦 الحلقات: {len(episodes)}\n"
         f"📤 الوجهة: *{target_name}*"
     )
 
     subtitle_map = {}
 
-    print("
-🚀 Starting parallel downloads (max 10 workers)...", flush=True)
+    print("\n🚀 Starting parallel downloads (max 10 workers)...", flush=True)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(download_episode, ep, TEMP_DIR, subtitle_map): ep for ep in episodes}
@@ -468,11 +439,9 @@ if __name__ == "__main__":
 
     with open(list_file, "w", encoding="utf-8") as f:
         for r in results:
-            f.write(f"file '{r['path']}'
-")
+            f.write(f"file '{r['path']}'\n")
 
-    print(f"
-✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
+    print(f"\n✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
     if subtitle_map:
         print(f"📝 Downloaded {len(subtitle_map)} subtitle files", flush=True)
 
@@ -480,14 +449,12 @@ if __name__ == "__main__":
 
     merged_srt = None
     if subtitle_map:
-        print("
-📝 Merging subtitles...", flush=True)
+        print("\n📝 Merging subtitles...", flush=True)
         merged_srt = merge_subtitles(TEMP_DIR, subtitle_map, downloaded_count, movie_name)
         if merged_srt and os.path.exists(merged_srt):
             print(f"✅ Merged subtitle: {merged_srt}", flush=True)
 
-    print("
-🔀 Starting FFmpeg merge...", flush=True)
+    print("\n🔀 Starting FFmpeg merge...", flush=True)
 
     ts_files = []
     for r in results:
@@ -513,8 +480,7 @@ if __name__ == "__main__":
         ts_list_file = "/tmp/ts_list.txt"
         with open(ts_list_file, "w", encoding="utf-8") as f:
             for tsf in ts_files:
-                f.write(f"file '{tsf}'
-")
+                f.write(f"file '{tsf}'\n")
 
         cmd = [
             "ffmpeg", "-y",
@@ -540,15 +506,12 @@ if __name__ == "__main__":
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.stdout:
-        print(f"FFmpeg stdout:
-{result.stdout}", flush=True)
+        print(f"FFmpeg stdout:\n{result.stdout}", flush=True)
     if result.stderr:
-        print(f"FFmpeg stderr:
-{result.stderr}", flush=True)
+        print(f"FFmpeg stderr:\n{result.stderr}", flush=True)
 
     if result.returncode != 0:
-        fail(f"فشل الدمج:
-{result.stderr[:500]}")
+        fail(f"فشل الدمج:\n{result.stderr[:500]}")
 
     if not os.path.exists(final_output):
         fail("ملف الدمج لم يُنشأ")
@@ -560,25 +523,17 @@ if __name__ == "__main__":
     print(f"✅ Merged file: {final_output} ({output_size:.1f} MB)", flush=True)
 
     if UPLOAD_TARGET == "vidara":
-        print("
-📺 Starting vidara.so upload...", flush=True)
+        print("\n📺 Starting vidara.so upload...", flush=True)
         vidara_result = upload_to_vidara(final_output, data.get('series_title', 'Video'), merged_srt)
 
         if vidara_result:
             vidara_url = vidara_result.get('url', '')
             filecode = vidara_result.get('filecode', '')
 
-            msg = f"🎉 *رفع على vidara.so بنجاح!*
-
-🎬 *{data.get('series_title', 'Unknown')}*
-📦 الحلقات: {downloaded_count}
-📁 الحجم: {output_size:.0f} MB"
+            msg = f"🎉 *رفع على vidara.so بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
             if merged_srt and os.path.exists(merged_srt):
-                msg += "
-📝 ملف الترجمة مرفق"
-            msg += f"
-
-🔗 [رابط المشاهدة]({vidara_url})"
+                msg += "\n📝 ملف الترجمة مرفق"
+            msg += f"\n\n🔗 [رابط المشاهدة]({vidara_url})"
 
             send_telegram(msg)
             print(f"🔗 Vidara link: {vidara_url}", flush=True)
@@ -587,8 +542,7 @@ if __name__ == "__main__":
     else:
         upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
 
-    print("
-🧹 Cleaning up...", flush=True)
+    print("\n🧹 Cleaning up...", flush=True)
     for r in results:
         safe_delete(r["path"])
     safe_delete(final_output)
@@ -596,5 +550,4 @@ if __name__ == "__main__":
     safe_delete(list_file)
     safe_delete("/tmp/ts_list.txt")
 
-    print("
-✅ Done!", flush=True)
+    print("\n✅ Done!", flush=True)
