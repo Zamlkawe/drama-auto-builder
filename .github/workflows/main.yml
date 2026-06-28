@@ -68,6 +68,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ github.event.client_payload.chat_id }}
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           JSON_PATH: ${{ github.event.client_payload.json_path }}
         run: |
           python .github/workflows/merge_script.py "$JSON_PATH"
