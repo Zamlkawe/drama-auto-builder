@@ -27,6 +27,75 @@ def get_upload_server():
     return None
 
 
+def upload_to_tmpfile(file_path):
+    """Upload a file to tmpfile.link and return the direct download URL"""
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (os.path.basename(file_path), f)}
+            resp = requests.post(
+                "https://tmpfile.link/api/upload",
+                files=files,
+                timeout=120
+            )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            url = data.get("downloadLink")
+            if url:
+                print(f"   ✅ Temp URL: {url}", flush=True)
+                return url
+    except Exception as e:
+        print(f"   ❌ tmpfile.link upload failed: {e}", flush=True)
+    return None
+
+
+def upload_subtitle_to_vidara(filecode, srt_path):
+    """Upload SRT subtitle to vidara.so via upload/sub endpoint"""
+    if not os.path.exists(srt_path):
+        print(f"   ⚠️ Subtitle file not found: {srt_path}", flush=True)
+        return False
+
+    print(f"
+📝 Uploading subtitle to vidara.so...", flush=True)
+    print(f"   File: {srt_path}", flush=True)
+
+    # Step 1: Upload SRT to tmpfile.link to get public URL
+    print(f"   Step 1: Uploading to tmpfile.link...", flush=True)
+    sub_url = upload_to_tmpfile(srt_path)
+
+    if not sub_url:
+        print(f"   ❌ Failed to get public URL for subtitle", flush=True)
+        return False
+
+    # Step 2: Send URL to vidara.so upload/sub
+    print(f"   Step 2: Sending to vidara.so...", flush=True)
+    try:
+        resp = requests.get(
+            f"{VIDARA_API_BASE}/upload/sub",
+            params={
+                "api_key": VIDARA_API_KEY,
+                "filecode": filecode,
+                "sub_lang": "English",
+                "sub_url": sub_url
+            },
+            timeout=60
+        )
+
+        data = resp.json()
+        print(f"   Response: {data}", flush=True)
+
+        if data.get("status") == 200:
+            print(f"   ✅ Subtitle uploaded successfully!", flush=True)
+            return True
+        else:
+            print(f"   ⚠️ Subtitle upload: {data}", flush=True)
+            return False
+
+    except Exception as e:
+        print(f"   ❌ Subtitle upload failed: {e}", flush=True)
+        return False
+
+
 def upload_video_to_vidara(video_path, title="", srt_path=None):
     """Upload video to vidara.so via multipart upload"""
     if not VIDARA_API_KEY:
@@ -37,7 +106,8 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
         print(f"❌ Video file not found: {video_path}", flush=True)
         return None
 
-    print(f"\n📤 Uploading to vidara.so...", flush=True)
+    print(f"
+📤 Uploading to vidara.so...", flush=True)
     print(f"   Video: {video_path}", flush=True)
 
     # Get upload server
@@ -85,7 +155,7 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
 
             # Upload subtitle if provided
             if srt_path and os.path.exists(srt_path):
-                upload_subtitle(filecode_clean, srt_path)
+                upload_subtitle_to_vidara(filecode_clean, srt_path)
 
             return {
                 "url": video_url,
@@ -101,17 +171,6 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
         return None
 
 
-def upload_subtitle(filecode, srt_path):
-    """Upload SRT subtitle to existing video"""
-    # vidara.so upload/sub needs sub_url (direct URL), not a file path
-    # We need to upload the SRT somewhere first, or use the upload API differently
-    # For now, we skip subtitle upload to vidara since it requires a public URL
-    print(f"\n📝 Note: Subtitle upload to vidara.so requires a public URL.", flush=True)
-    print(f"   Subtitle file: {srt_path}", flush=True)
-    print(f"   Skipping vidara subtitle upload (video uploaded successfully)", flush=True)
-    return False
-
-
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python vidara_uploader.py <video_path> [title] [srt_path]")
@@ -124,8 +183,10 @@ if __name__ == "__main__":
     result = upload_video_to_vidara(video_path, title, srt_path)
 
     if result:
-        print(f"\nSUCCESS: {result['url']}")
+        print(f"
+SUCCESS: {result['url']}")
         sys.exit(0)
     else:
-        print("\nFAILED")
+        print("
+FAILED")
         sys.exit(1)
