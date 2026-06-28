@@ -27,25 +27,28 @@ def get_upload_server():
     return None
 
 
-def upload_to_tmpfile(file_path):
-    """Upload a file to tmpfile.link and return the direct download URL"""
+def upload_to_temp_host(file_path):
+    """Upload a file to catbox.moe and return the direct download URL"""
     try:
         with open(file_path, "rb") as f:
-            files = {"file": (os.path.basename(file_path), f)}
+            files = {"fileToUpload": (os.path.basename(file_path), f)}
+            data = {"reqtype": "fileupload"}
+            # استخدام catbox لضمان الحصول على رابط مباشر 100% للـ SRT
             resp = requests.post(
-                "https://tmpfile.link/api/upload",
+                "https://catbox.moe/user/api.php",
+                data=data,
                 files=files,
                 timeout=120
             )
 
-        if resp.status_code == 200:
-            data = resp.json()
-            url = data.get("downloadLink")
-            if url:
-                print(f"   ✅ Temp URL: {url}", flush=True)
-                return url
+        if resp.status_code == 200 and resp.text.startswith("http"):
+            url = resp.text.strip()
+            print(f"   ✅ Temp URL: {url}", flush=True)
+            return url
+        else:
+            print(f"   ❌ Temp upload failed. Status: {resp.status_code}, Response: {resp.text}", flush=True)
     except Exception as e:
-        print(f"   ❌ tmpfile.link upload failed: {e}", flush=True)
+        print(f"   ❌ Temp upload exception: {e}", flush=True)
     return None
 
 
@@ -58,23 +61,23 @@ def upload_subtitle_to_vidara(filecode, srt_path):
     print(f"\n📝 Uploading subtitle to vidara.so...", flush=True)
     print(f"   File: {srt_path}", flush=True)
 
-    # Step 1: Upload SRT to tmpfile.link to get public URL
-    print(f"   Step 1: Uploading to tmpfile.link...", flush=True)
-    sub_url = upload_to_tmpfile(srt_path)
+    # Step 1: Upload SRT to get a direct public URL
+    print(f"   Step 1: Uploading to temporary direct-link host...", flush=True)
+    sub_url = upload_to_temp_host(srt_path)
 
     if not sub_url:
         print(f"   ❌ Failed to get public URL for subtitle", flush=True)
         return False
 
     # Step 2: Send URL to vidara.so upload/sub
-    print(f"   Step 2: Sending to vidara.so...", flush=True)
+    print(f"   Step 2: Sending URL to vidara.so API...", flush=True)
     try:
         resp = requests.get(
             f"{VIDARA_API_BASE}/upload/sub",
             params={
                 "api_key": VIDARA_API_KEY,
                 "filecode": filecode,
-                "sub_lang": "English",
+                "sub_lang": "Arabic", # تم التعديل لتظهر الترجمة كعربية
                 "sub_url": sub_url
             },
             timeout=60
@@ -84,10 +87,10 @@ def upload_subtitle_to_vidara(filecode, srt_path):
         print(f"   Response: {data}", flush=True)
 
         if data.get("status") == 200:
-            print(f"   ✅ Subtitle uploaded successfully!", flush=True)
+            print(f"   ✅ Subtitle uploaded successfully to Vidara!", flush=True)
             return True
         else:
-            print(f"   ⚠️ Subtitle upload: {data}", flush=True)
+            print(f"   ⚠️ Subtitle upload returned error: {data}", flush=True)
             return False
 
     except Exception as e:
@@ -128,23 +131,20 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
                 upload_server,
                 data=data,
                 files=files,
-                timeout=600,
+                timeout=1200, # زيادة وقت الـ Timeout للملفات الكبيرة
                 verify=False
             )
 
         result = resp.json()
         print(f"   Response: {result}", flush=True)
 
-        # vidara.so returns: {"filecode": "https://vidara.to/e/...", "video_id": ..., "title": ...}
         if result and result.get("filecode"):
             filecode = result["filecode"]
-            # filecode might be a full URL like "https://vidara.to/e/xxx" or just a code
             if filecode.startswith("http"):
                 video_url = filecode
-                # Extract actual filecode from URL if possible
                 filecode_clean = filecode.split("/")[-1]
             else:
-                video_url = f"https://vidara.so/{filecode}"
+                video_url = result.get("url", f"https://vidara.so/v/{filecode}")
                 filecode_clean = filecode
 
             print(f"✅ Video uploaded!", flush=True)
@@ -153,6 +153,8 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
 
             # Upload subtitle if provided
             if srt_path and os.path.exists(srt_path):
+                # تأخير 3 ثواني لضمان تسجيل الفيديو في قاعدة بيانات Vidara قبل رفع الترجمة
+                time.sleep(3) 
                 upload_subtitle_to_vidara(filecode_clean, srt_path)
 
             return {
