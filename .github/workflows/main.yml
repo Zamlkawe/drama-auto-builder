@@ -57,28 +57,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Chrome and ChromeDriver
-        uses: nanasess/setup-chromedriver@v3
-
-      - name: Verify Chrome and ChromeDriver
-        run: |
-          google-chrome --version
-          chromedriver --version
-
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp selenium webdriver-manager
-
-      - name: Setup Rumble cookies
-        if: github.event.client_payload.upload_target == 'rumble'
-        env:
-          RUMBLE_COOKIES_DATA: ${{ secrets.RUMBLE_COOKIES }}
-        run: |
-          echo "$RUMBLE_COOKIES_DATA" > /tmp/cookies.json
-          echo "✅ Rumble cookies saved"
+          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp
 
       - name: Run merge script
         env:
@@ -89,8 +73,7 @@ jobs:
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           UPLOAD_TARGET: ${{ github.event.client_payload.upload_target }}
-          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
-          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          VIDARA_API_KEY: ${{ secrets.VIDARA_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: |
           python .github/workflows/merge_script.py "${{ github.event.client_payload.json_path }}"
