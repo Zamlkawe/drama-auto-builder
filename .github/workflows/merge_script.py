@@ -10,9 +10,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID            = os.environ.get("TELEGRAM_CHAT_ID")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS")
-
-# ✅ Folder ID - الفولدر المشارك مع الـ Service Account
-GDRIVE_FOLDER_ID = "1dE6YUqnnWNcS_sEw9Y1ejCZzT1I5yuNl"
+# ✅ Shared Drive ID من الـ Secrets
+GDRIVE_FOLDER_ID   = os.environ.get("GDRIVE_FOLDER_ID")
 
 TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -44,6 +43,10 @@ if not os.path.exists(json_path):
 
 if not GDRIVE_CREDENTIALS:
     send_telegram("❌ متغير GDRIVE_CREDENTIALS غير موجود في Secrets.")
+    sys.exit(1)
+
+if not GDRIVE_FOLDER_ID:
+    send_telegram("❌ متغير GDRIVE_FOLDER_ID غير موجود في Secrets.")
     sys.exit(1)
 
 # ── قراءة الـ JSON ─────────────────────────────────────────────────
@@ -135,7 +138,7 @@ if result.returncode != 0:
 
 send_telegram("✅ اكتمل الدمج، جاري الرفع على Google Drive...")
 
-# ── رفع على Google Drive ───────────────────────────────────────────
+# ── رفع على Google Shared Drive ────────────────────────────────────
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -152,7 +155,6 @@ try:
 
     file_metadata = {
         "name": f"{movie_name}_Full_Movie.mp4",
-        # ✅ الفولدر المشارك - مش root
         "parents": [GDRIVE_FOLDER_ID]
     }
 
@@ -160,19 +162,21 @@ try:
         final_output,
         mimetype="video/mp4",
         resumable=True,
-        chunksize=10 * 1024 * 1024  # 10MB chunks
+        chunksize=10 * 1024 * 1024
     )
 
+    # ✅ supportsAllDrives=True ضروري للـ Shared Drive
     uploaded = service.files().create(
         body=file_metadata,
         media_body=media,
-        fields="id, webViewLink"
+        fields="id, webViewLink",
+        supportsAllDrives=True
     ).execute()
 
-    # تفعيل المشاركة العامة
     service.permissions().create(
         fileId=uploaded["id"],
-        body={"type": "anyone", "role": "reader"}
+        body={"type": "anyone", "role": "reader"},
+        supportsAllDrives=True
     ).execute()
 
     drive_link = uploaded["webViewLink"]
