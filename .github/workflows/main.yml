@@ -57,32 +57,83 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Chrome & ChromeDriver
+      - name: Install Chrome & ChromeDriver (Chrome for Testing)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y wget gnupg unzip
-          # Install Google Chrome
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list
+          sudo apt-get install -y wget unzip
+
+          # Install Google Chrome (latest stable)
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add - 2>/dev/null || true
+          echo "deb http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list >/dev/null
           sudo apt-get update -qq
           sudo apt-get install -y google-chrome-stable
-          # Install ChromeDriver
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+')
-          CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION%%.*}")
-          wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-          unzip -q chromedriver_linux64.zip
-          sudo mv chromedriver /usr/local/bin/
-          sudo chmod +x /usr/local/bin/chromedriver
-          rm chromedriver_linux64.zip
+
+          # Get Chrome version
+          CHROME_FULL=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          CHROME_MAJOR=$(echo "$CHROME_FULL" | cut -d. -f1)
+          echo "Chrome installed: $CHROME_FULL (major: $CHROME_MAJOR)"
+
+          # Download ChromeDriver from Chrome for Testing API
+          echo "Downloading ChromeDriver for Chrome $CHROME_MAJOR..."
+
+          # Try the new Chrome for Testing API first
+          CF_JSON=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json")
+
+          if [ -n "$CF_JSON" ]; then
+            # Find matching ChromeDriver URL
+            DRIVER_URL=$(echo "$CF_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+chrome_ver = '$CHROME_FULL'
+major = '$CHROME_MAJOR'
+for v in data.get('versions', []):
+    if v['version'].startswith(major + '.'):
+        for d in v.get('downloads', {}).get('chromedriver', []):
+            if d['platform'] == 'linux64':
+                print(d['url'])
+                sys.exit(0)
+" 2>/dev/null)
+          fi
+
+          if [ -z "$DRIVER_URL" ]; then
+            # Fallback: use webdriver-manager
+            echo "Using webdriver-manager fallback..."
+            pip install webdriver-manager
+            python3 -c "
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+opts = Options()
+opts.add_argument('--headless=new')
+opts.add_argument('--no-sandbox')
+driver = webdriver.Chrome(options=opts)
+print('ChromeDriver path:', driver.service.path)
+driver.quit()
+" 2>/dev/null || true
+          else
+            echo "Found ChromeDriver URL: $DRIVER_URL"
+            wget -q "$DRIVER_URL" -O chromedriver_linux64.zip
+            unzip -q chromedriver_linux64.zip
+            # The zip might have nested directory
+            if [ -f "chromedriver-linux64/chromedriver" ]; then
+              sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
+            else
+              sudo mv chromedriver /usr/local/bin/
+            fi
+            sudo chmod +x /usr/local/bin/chromedriver
+            rm -rf chromedriver_linux64.zip chromedriver-linux64 chromedriver 2>/dev/null || true
+          fi
+
+          # Verify
+          which chromedriver && chromedriver --version || echo "ChromeDriver not in PATH, will use webdriver-manager"
           echo "Chrome version: $(google-chrome --version)"
-          echo "ChromeDriver version: $(chromedriver --version)"
 
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp selenium
+          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp selenium webdriver-manager
 
       - name: Setup Rumble cookies
         if: github.event.client_payload.upload_target == 'rumble'
