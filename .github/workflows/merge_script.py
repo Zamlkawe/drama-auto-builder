@@ -39,7 +39,9 @@ def send_telegram(text):
 
 
 def fail(msg):
-    print(f"\n❌ FATAL ERROR: {msg}\n", flush=True)
+    print("")
+    print(f"❌ FATAL ERROR: {msg}")
+    print("")
     send_telegram(f"❌ {msg}")
     sys.exit(1)
 
@@ -320,7 +322,8 @@ def upload_to_vidara(video_path, title, srt_path=None):
 
 def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size):
     """Upload to Google Drive"""
-    print("\n☁️ Starting Google Drive upload...", flush=True)
+    print("")
+    print("☁️ Starting Google Drive upload...", flush=True)
 
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -360,7 +363,10 @@ def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_coun
 
         drive_link = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{video_id}/view"
 
-        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
+        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*"
+        msg += f"\n\n🎬 *{data.get('series_title', 'Unknown')}*"
+        msg += f"\n📦 الحلقات: {downloaded_count}"
+        msg += f"\n📁 الحجم: {output_size:.0f} MB"
         if srt_link:
             msg += f"\n📝 [ملف الترجمة]({srt_link})"
         msg += f"\n\n🔗 [رابط المشاهدة]({drive_link})"
@@ -422,7 +428,8 @@ if __name__ == "__main__":
 
     subtitle_map = {}
 
-    print("\n🚀 Starting parallel downloads (max 10 workers)...", flush=True)
+    print("")
+    print("🚀 Starting parallel downloads (max 10 workers)...", flush=True)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(download_episode, ep, TEMP_DIR, subtitle_map): ep for ep in episodes}
@@ -441,7 +448,8 @@ if __name__ == "__main__":
         for r in results:
             f.write(f"file '{r['path']}'\n")
 
-    print(f"\n✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
+    print("")
+    print(f"✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
     if subtitle_map:
         print(f"📝 Downloaded {len(subtitle_map)} subtitle files", flush=True)
 
@@ -449,12 +457,14 @@ if __name__ == "__main__":
 
     merged_srt = None
     if subtitle_map:
-        print("\n📝 Merging subtitles...", flush=True)
+        print("")
+        print("📝 Merging subtitles...", flush=True)
         merged_srt = merge_subtitles(TEMP_DIR, subtitle_map, downloaded_count, movie_name)
         if merged_srt and os.path.exists(merged_srt):
             print(f"✅ Merged subtitle: {merged_srt}", flush=True)
 
-    print("\n🔀 Starting FFmpeg merge...", flush=True)
+    print("")
+    print("🔀 Starting FFmpeg merge...", flush=True)
 
     ts_files = []
     for r in results:
@@ -523,14 +533,18 @@ if __name__ == "__main__":
     print(f"✅ Merged file: {final_output} ({output_size:.1f} MB)", flush=True)
 
     if UPLOAD_TARGET == "vidara":
-        print("\n📺 Starting vidara.so upload...", flush=True)
+        print("")
+        print("📺 Starting vidara.so upload...", flush=True)
         vidara_result = upload_to_vidara(final_output, data.get('series_title', 'Video'), merged_srt)
 
         if vidara_result:
             vidara_url = vidara_result.get('url', '')
             filecode = vidara_result.get('filecode', '')
 
-            msg = f"🎉 *رفع على vidara.so بنجاح!*\n\n🎬 *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {downloaded_count}\n📁 الحجم: {output_size:.0f} MB"
+            msg = f"🎉 *رفع على vidara.so بنجاح!*"
+            msg += f"\n\n🎬 *{data.get('series_title', 'Unknown')}*"
+            msg += f"\n📦 الحلقات: {downloaded_count}"
+            msg += f"\n📁 الحجم: {output_size:.0f} MB"
             if merged_srt and os.path.exists(merged_srt):
                 msg += "\n📝 ملف الترجمة مرفق"
             msg += f"\n\n🔗 [رابط المشاهدة]({vidara_url})"
@@ -542,7 +556,8 @@ if __name__ == "__main__":
     else:
         upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
 
-    print("\n🧹 Cleaning up...", flush=True)
+    print("")
+    print("🧹 Cleaning up...", flush=True)
     for r in results:
         safe_delete(r["path"])
     safe_delete(final_output)
@@ -550,4 +565,5 @@ if __name__ == "__main__":
     safe_delete(list_file)
     safe_delete("/tmp/ts_list.txt")
 
-    print("\n✅ Done!", flush=True)
+    print("")
+    print("✅ Done!", flush=True)
