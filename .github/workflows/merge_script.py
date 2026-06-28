@@ -39,7 +39,11 @@ with open(json_path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
 episodes = data.get("episodes", [])
-movie_name = "".join(x for x in data.get("series_title", "movie") if x.isalnum() or x in " _-").strip() or "movie"
+movie_name = "".join(
+    x for x in data.get("series_title", "movie")
+    if x.isalnum() or x in " _-"
+).strip() or "movie"
+
 final_output = f"/tmp/{movie_name}_Full_Movie.mp4"
 list_file = "/tmp/mylist.txt"
 
@@ -60,17 +64,23 @@ for ep in episodes:
         print(f"Skipping episode {ep_num}: invalid url")
         continue
 
-    video_path = os.path.join(TEMP_DIR, f"ep_{int(ep_num):04d}.mp4")
+    try:
+        ep_num_int = int(ep_num)
+    except:
+        print(f"Skipping episode {ep_num}: invalid episode number")
+        continue
+
+    video_path = os.path.join(TEMP_DIR, f"ep_{ep_num_int:04d}.mp4")
     print(f"Downloading episode {ep_num}...")
 
     try:
         r = requests.get(url, stream=True, verify=False, timeout=120)
         r.raise_for_status()
 
-        with open(video_path, "wb") as f:
+        with open(video_path, "wb") as out:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
                 if chunk:
-                    f.write(chunk)
+                    out.write(chunk)
 
         list_content += f"file '{video_path}'\n"
         downloaded_count += 1
@@ -109,6 +119,10 @@ if result.returncode != 0:
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+if not GDRIVE_CREDENTIALS:
+    send_telegram("❌ متغير GDRIVE_CREDENTIALS غير موجود.")
+    sys.exit(1)
 
 creds_data = json.loads(GDRIVE_CREDENTIALS)
 creds = service_account.Credentials.from_service_account_info(
