@@ -13,12 +13,24 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Debug files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Repository files:"
+          ls -la
+          echo "Workflow files:"
+          ls -la .github/workflows || true
+          echo "Jobs files:"
+          ls -la jobs || true
+
       - name: Validate payload
         run: |
           echo "JSON path: ${{ github.event.client_payload.json_path }}"
           echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
           test -n "${{ github.event.client_payload.json_path }}"
           test -f "${{ github.event.client_payload.json_path }}"
+          test -f "merge_script.py"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -39,4 +51,4 @@ jobs:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           JSON_PATH: ${{ github.event.client_payload.json_path }}
         run: |
-          python merge_script.py "$JSON_PATH"
+          python ./merge_script.py "$JSON_PATH"
