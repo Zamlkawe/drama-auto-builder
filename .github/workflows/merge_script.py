@@ -7,12 +7,16 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID          = os.environ.get("TELEGRAM_CHAT_ID")
 GDRIVE_CREDENTIALS = os.environ.get("GDRIVE_CREDENTIALS")
+
+# ✅ Folder ID ثابت - الفولدر اللي شاركته مع الـ Service Account
+GDRIVE_FOLDER_ID = "1dE6YUqnnWNcS_sEw9Y1ejCZzT1I5yuNl"
 
 TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
+
 
 def send_telegram(text):
     if TELEGRAM_TOKEN and CHAT_ID:
@@ -25,6 +29,9 @@ def send_telegram(text):
         except Exception as e:
             print(f"Telegram send failed: {e}")
 
+
+# ── التحقق من المدخلات ──────────────────────────────────────────────────────
+
 if len(sys.argv) < 2:
     print("Usage: python merge_script.py <json_path>")
     sys.exit(1)
@@ -35,17 +42,23 @@ if not os.path.exists(json_path):
     print(f"JSON file not found: {json_path}")
     sys.exit(1)
 
+if not GDRIVE_CREDENTIALS:
+    send_telegram("❌ متغير GDRIVE_CREDENTIALS غير موجود في Secrets.")
+    sys.exit(1)
+
+# ── قراءة الـ JSON ──────────────────────────────────────────────────────────
+
 with open(json_path, "r", encoding="utf-8") as f:
     data = json.load(f)
 
-episodes = data.get("episodes", [])
+episodes   = data.get("episodes", [])
 movie_name = "".join(
     x for x in data.get("series_title", "movie")
     if x.isalnum() or x in " _-"
 ).strip() or "movie"
 
 final_output = f"/tmp/{movie_name}_Full_Movie.mp4"
-list_file = "/tmp/mylist.txt"
+list_file    = "/tmp/mylist.txt"
 
 send_telegram(
     f"🚀 *GitHub Actions* بدأ العمل!\n"
@@ -53,11 +66,13 @@ send_telegram(
     f"📦 الحلقات: {len(episodes)}"
 )
 
-list_content = ""
+# ── تحميل الحلقات ───────────────────────────────────────────────────────────
+
+list_content     = ""
 downloaded_count = 0
 
 for ep in episodes:
-    url = ep.get("video_url", "")
+    url    = ep.get("video_url", "")
     ep_num = ep.get("episode", "?")
 
     if not url or "http" not in str(url):
@@ -66,7 +81,7 @@ for ep in episodes:
 
     try:
         ep_num_int = int(ep_num)
-    except:
+    except Exception:
         print(f"Skipping episode {ep_num}: invalid episode number")
         continue
 
@@ -82,7 +97,7 @@ for ep in episodes:
                 if chunk:
                     out.write(chunk)
 
-        list_content += f"file '{video_path}'\n"
+        list_content     += f"file '{video_path}'\n"
         downloaded_count += 1
 
     except Exception as e:
@@ -95,7 +110,9 @@ if downloaded_count == 0:
 with open(list_file, "w", encoding="utf-8") as f:
     f.write(list_content)
 
-send_telegram("⏳ اكتمل التحميل، جاري الدمج بـ FFmpeg...")
+send_telegram(f"⏳ اكتمل التحميل ({downloaded_count} حلقة)، جاري الدمج بـ FFmpeg...")
+
+# ── دمج الفيديوهات ──────────────────────────────────────────────────────────
 
 result = subprocess.run(
     [
@@ -116,44 +133,52 @@ if result.returncode != 0:
     send_telegram(f"❌ فشل الدمج:\n{result.stderr[:500]}")
     sys.exit(1)
 
+send_telegram("✅ اكتمل الدمج، جاري الرفع على Google Drive...")
+
+# ── رفع على Google Drive ────────────────────────────────────────────────────
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-if not GDRIVE_CREDENTIALS:
-    send_telegram("❌ متغير GDRIVE_CREDENTIALS غير موجود.")
+try:
+    creds_data = json.loads(GDRIVE_CREDENTIALS)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_data,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+
+    service = build("drive", "v3", credentials=creds)
+
+    file_metadata = {
+        "name": f"{movie_name}_Full_Movie.mp4",
+        # ✅ الفولدر المشارك مع الـ Service Account - مش root
+        "parents": [GDRIVE_FOLDER_ID]
+    }
+
+    media = MediaFileUpload(final_output, mimetype="video/mp4", resumable=True)
+
+    uploaded = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id, webViewLink"
+    ).execute()
+
+    # تفعيل المشاركة العامة
+    service.permissions().create(
+        fileId=uploaded["id"],
+        body={"type": "anyone", "role": "reader"}
+    ).execute()
+
+    drive_link = uploaded["webViewLink"]
+
+    send_telegram(
+        f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n"
+        f"🎬 *{data.get('series_title', 'Unknown')}*\n"
+        f"📦 الحلقات المحمّلة: {downloaded_count}\n\n"
+        f"🔗 [رابط المشاهدة على Google Drive]({drive_link})"
+    )
+
+except Exception as e:
+    send_telegram(f"❌ فشل الرفع على Google Drive:\n{str(e)[:500]}")
     sys.exit(1)
-
-creds_data = json.loads(GDRIVE_CREDENTIALS)
-creds = service_account.Credentials.from_service_account_info(
-    creds_data,
-    scopes=["https://www.googleapis.com/auth/drive"]
-)
-
-service = build("drive", "v3", credentials=creds)
-
-file_metadata = {
-    "name": f"{movie_name}_Full_Movie.mp4",
-    "parents": ["root"]
-}
-
-media = MediaFileUpload(final_output, mimetype="video/mp4", resumable=True)
-uploaded = service.files().create(
-    body=file_metadata,
-    media_body=media,
-    fields="id, webViewLink"
-).execute()
-
-service.permissions().create(
-    fileId=uploaded["id"],
-    body={"type": "anyone", "role": "reader"}
-).execute()
-
-drive_link = uploaded["webViewLink"]
-
-send_telegram(
-    f"🎉 *اكتمل الدمج والرفع بنجاح!*\n\n"
-    f"🎬 *{data.get('series_title', 'Unknown')}*\n"
-    f"📦 الحلقات المحمّلة: {downloaded_count}\n\n"
-    f"🔗 [رابط المشاهدة على Google Drive]({drive_link})"
-)
