@@ -255,6 +255,17 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     video_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.mp4")
     srt_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.srt")
 
+    # --- تصحيح مسار الترجمة لو كان رابط نسبي (Relative URL) ---
+    if sub_url:
+        sub_url = str(sub_url).strip()
+        if sub_url.startswith("//"):
+            sub_url = "https:" + sub_url
+        elif sub_url.startswith("/"):
+            sub_url = "https://netshort.dramafren.org" + sub_url
+        elif not sub_url.startswith("http"):
+            sub_url = "https://netshort.dramafren.org/" + sub_url
+    # --------------------------------------------------------
+
     for attempt in range(5):
         try:
             print(f"⬇️ Downloading episode {ep_num} (attempt {attempt + 1})...", flush=True)
@@ -288,9 +299,9 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     size_mb = os.path.getsize(video_path) / (1024 * 1024)
     print(f"✅ Episode {ep_num} downloaded ({size_mb:.1f} MB)", flush=True)
 
-    if sub_url and "http" in str(sub_url):
+    if sub_url:
         try:
-            print(f"  📝 Downloading subtitle for ep {ep_num}...", flush=True)
+            print(f"  📝 Downloading subtitle for ep {ep_num} from {sub_url[:60]}...", flush=True)
             sub_r = requests.get(sub_url, verify=False, timeout=30)
             if sub_r.status_code == 200:
                 srt_content = normalize_subtitles(sub_r.text)
@@ -299,6 +310,10 @@ def download_episode(ep_data, temp_dir, subtitle_map):
                         f.write(srt_content)
                     subtitle_map[ep_num_int] = srt_content
                     print(f"  ✅ Subtitle ep {ep_num} downloaded", flush=True)
+                else:
+                    print(f"  ⚠️ Subtitle file was empty after normalization.", flush=True)
+            else:
+                print(f"  ⚠️ Subtitle request failed with status: {sub_r.status_code}", flush=True)
         except Exception as sub_e:
             print(f"  ⚠️ Subtitle download failed: {sub_e}", flush=True)
 
