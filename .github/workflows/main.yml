@@ -52,17 +52,6 @@ jobs:
             exit 1
           fi
 
-      - name: Fix vidara.so DNS
-        run: |
-          # vidara.so API بيرجع s1.vidara.so لكنه مش موجود في DNS
-          # نضيفه لـ /etc/hosts عشان يحل لـ IP بتاع vidara.so
-          VidarIP=$(dig +short vidara.so | head -1)
-          if [ -n "$VidarIP" ]; then
-            echo "$VidarIP s1.vidara.so" | sudo tee -a /etc/hosts
-            echo "✅ Added s1.vidara.so -> $VidarIP to /etc/hosts"
-          fi
-          cat /etc/hosts | grep vidara || true
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
