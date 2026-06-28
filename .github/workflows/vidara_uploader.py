@@ -55,8 +55,7 @@ def upload_subtitle_to_vidara(filecode, srt_path):
         print(f"   ⚠️ Subtitle file not found: {srt_path}", flush=True)
         return False
 
-    print(f"
-📝 Uploading subtitle to vidara.so...", flush=True)
+    print(f"\n📝 Uploading subtitle to vidara.so...", flush=True)
     print(f"   File: {srt_path}", flush=True)
 
     # Step 1: Upload SRT to tmpfile.link to get public URL
@@ -106,8 +105,7 @@ def upload_video_to_vidara(video_path, title="", srt_path=None):
         print(f"❌ Video file not found: {video_path}", flush=True)
         return None
 
-    print(f"
-📤 Uploading to vidara.so...", flush=True)
+    print(f"\n📤 Uploading to vidara.so...", flush=True)
     print(f"   Video: {video_path}", flush=True)
 
     # Get upload server
@@ -183,10 +181,8 @@ if __name__ == "__main__":
     result = upload_video_to_vidara(video_path, title, srt_path)
 
     if result:
-        print(f"
-SUCCESS: {result['url']}")
+        print(f"\nSUCCESS: {result['url']}")
         sys.exit(0)
     else:
-        print("
-FAILED")
+        print("\nFAILED")
         sys.exit(1)
