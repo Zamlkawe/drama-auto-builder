@@ -145,7 +145,7 @@ def get_video_duration_ms(video_path):
         if val and val != "N/A":
             return int(float(val) * 1000)
     except Exception as e:
-        print(f"⚠️ Could not get duration: {e}", flush=True)
+        print(f"️ Could not get duration: {e}", flush=True)
     return 0
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
@@ -275,7 +275,7 @@ def download_episode(ep_data, temp_dir, subtitle_map):
                     with open(srt_path, "w", encoding="utf-8") as f: f.write(normalized)
                     subtitle_map[ep_num_int] = normalized
         except Exception as sub_e:
-            print(f"⚠️ Subtitle download failed: {sub_e}", flush=True)
+            print(f"️ Subtitle download failed: {sub_e}", flush=True)
 
     return {"ep": ep_num_int, "path": video_path}
 
@@ -289,7 +289,7 @@ def upload_to_vidara(video_path, title, srt_path=None):
         return None
 
 def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size):
-    print("\n☁️ Starting Google Drive upload...", flush=True)
+    print("\n️ Starting Google Drive upload...", flush=True)
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
@@ -360,7 +360,7 @@ def upload_to_firebase(db, data, video_link, srt_link):
         doc_ref.set(doc_data, merge=True)
         print(f"✅ Uploaded metadata to Firebase (ID: {drama_id})", flush=True)
     except Exception as e:
-        print(f"⚠️ Firebase upload failed: {e}", flush=True)
+        print(f"️ Firebase upload failed: {e}", flush=True)
 
 # ========== MAIN ==========
 if __name__ == "__main__":
@@ -379,7 +379,7 @@ if __name__ == "__main__":
     final_output = f"/tmp/{movie_name}_Full_Movie.mp4"
     list_file = "/tmp/mylist.txt"
 
-    target_name = "vidara.so 📺" if UPLOAD_TARGET == "vidara" else "Google Drive ☁️"
+    target_name = "vidara.so " if UPLOAD_TARGET == "vidara" else "Google Drive ☁️"
     send_telegram(f"🚀 *GitHub Actions* بدأ العمل!\n🎬 المسلسل: *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {len(episodes)}\n📤 الوجهة: *{target_name}*")
 
     subtitle_map = {}
@@ -434,7 +434,7 @@ if __name__ == "__main__":
         vidara_result = upload_to_vidara(final_output, data.get('series_title', 'Video'), merged_srt)
         if vidara_result:
             final_video_link = vidara_result.get('url', '')
-            msg = f"🎉 *رفع على vidara.so بنجاح!* \n\n🎬 *{data.get('series_title', 'Unknown')}* \n📦 الحلقات: {downloaded_count} \n📁 الحجم: {output_size:.0f} MB \n\n🔗 [رابط المشاهدة]({final_video_link}) "
+            msg = f" *رفع على vidara.so بنجاح!* \n\n🎬 *{data.get('series_title', 'Unknown')}* \n📦 الحلقات: {downloaded_count} \n📁 الحجم: {output_size:.0f} MB \n\n🔗 [رابط المشاهدة]({final_video_link}) "
             send_telegram(msg)
         else:
             fail("فشل الرفع على vidara.so.")
