@@ -10,6 +10,10 @@ import time
 import concurrent.futures
 import chardet
 
+# ✅ إضافة مكتبات Firebase
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TELEGRAM_TOKEN       = os.environ.get("TELEGRAM_TOKEN")
@@ -20,11 +24,12 @@ GDRIVE_REFRESH_TOKEN = os.environ.get("GDRIVE_REFRESH_TOKEN")
 GDRIVE_FOLDER_ID     = os.environ.get("GDRIVE_FOLDER_ID")
 UPLOAD_TARGET        = os.environ.get("UPLOAD_TARGET", "gdrive").lower()
 VIDARA_API_KEY       = os.environ.get("VIDARA_API_KEY", "")
+FIREBASE_SA_JSON     = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
 
 TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# ---------- أدوات فك الترميز ----------
+# ========== أدوات فك الترميز ==========
 def decode_subtitle_content(content_bytes):
     encodings = ['utf-8', 'windows-1256', 'iso-8859-6', 'cp1256', 'utf-8-sig']
     for enc in encodings:
@@ -49,7 +54,7 @@ def read_subtitle_file(srt_path):
         print(f"⚠️ Could not read subtitle file: {e}", flush=True)
         return ""
 
-# ---------- Telegram ----------
+# ========== Telegram ==========
 def send_telegram(text):
     if TELEGRAM_TOKEN and CHAT_ID:
         try:
@@ -73,12 +78,12 @@ def safe_delete(filepath):
         try:
             if os.path.exists(filepath):
                 os.remove(filepath)
-                return True
+            return True
         except:
             time.sleep(1)
     return False
 
-# ---------- معالجة الترجمة ----------
+# ========== معالجة الترجمة ==========
 def normalize_subtitles(text):
     if not text:
         return ""
@@ -89,17 +94,19 @@ def normalize_subtitles(text):
     start_ts = end_ts = ""
     in_block = False
     ts_pattern = re.compile(r'(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})\s*-->\s*(\d{1,2}:)?(\d{1,2}:\d{1,2})[.,](\d{1,3})')
+
     def format_time(h, ms, milli):
         h = h.strip(':').zfill(2) if h else "00"
         m, s = ms.split(':')
         return f"{h}:{m.zfill(2)}:{s.zfill(2)},{milli.ljust(3, '0')[:3]}"
+
     for line in lines:
         line = line.strip()
         if not line:
             if in_block and current_block_lines:
                 srt_blocks.append((start_ts, end_ts, current_block_lines))
-                in_block = False
-                current_block_lines = []
+            in_block = False
+            current_block_lines = []
             continue
         upper = line.upper()
         if upper.startswith(('WEBVTT', 'REGION', 'STYLE', 'X-TIMESTAMP-MAP')):
@@ -117,12 +124,13 @@ def normalize_subtitles(text):
             continue
         if in_block:
             clean = re.sub(r'<[^>]+>', '', line)
-            clean = re.sub(r'\[font.*?\]', '', clean, flags=re.IGNORECASE)
             clean = re.sub(r'\{.*?\}', '', clean)
             if clean.strip():
                 current_block_lines.append(clean.strip())
+                
     if in_block and current_block_lines:
         srt_blocks.append((start_ts, end_ts, current_block_lines))
+
     output = []
     for i, (start, end, text_lines) in enumerate(srt_blocks, 1):
         if text_lines:
@@ -130,14 +138,8 @@ def normalize_subtitles(text):
     return "\n".join(output).strip()
 
 def get_video_duration_ms(video_path):
-    """استرجاع مدة الفيديو بالمللي ثانية باستخدام ffprobe"""
     try:
-        cmd = [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            video_path
-        ]
+        cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         val = result.stdout.strip()
         if val and val != "N/A":
@@ -147,18 +149,15 @@ def get_video_duration_ms(video_path):
     return 0
 
 def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
-    """دمج الترجمات مع إزاحة تراكمية دقيقة"""
     merged_path = f"/tmp/{movie_name}_Full_Movie.srt"
-    cum_offset_ms = 0  # وقت بداية الحلقة الحالية
+    cum_offset_ms = 0
     global_index = 1
     all_entries = []
 
     def ts_to_ms(ts):
         p = ts.replace(',', '.').split(':')
-        if len(p) == 2:
-            return int((int(p[0]) * 60 + float(p[1])) * 1000)
-        elif len(p) >= 3:
-            return int((int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])) * 1000)
+        if len(p) == 2: return int((int(p[0]) * 60 + float(p[1])) * 1000)
+        elif len(p) >= 3: return int((int(p[0]) * 3600 + int(p[1]) * 60 + float(p[2])) * 1000)
         return 0
 
     def ms_to_srt(ms):
@@ -167,14 +166,10 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
         s, mi = divmod(ms, 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{mi:03d}"
 
-    # الحصول على مدة كل حلقة
     episode_durations = []
     for ep in range(1, total_eps + 1):
         mp4_path = os.path.join(temp_dir, f"ep_{ep:04d}.mp4")
-        if os.path.exists(mp4_path):
-            episode_durations.append(get_video_duration_ms(mp4_path))
-        else:
-            episode_durations.append(0)
+        episode_durations.append(get_video_duration_ms(mp4_path) if os.path.exists(mp4_path) else 0)
 
     for ep in range(1, total_eps + 1):
         srt_path = os.path.join(temp_dir, f"ep_{ep:04d}.srt")
@@ -191,38 +186,26 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
             cum_offset_ms += episode_durations[ep-1]
             continue
 
-        offset = cum_offset_ms  # وقت بداية الحلقة الحالية
-
+        offset = cum_offset_ms
         blocks = re.split(r'\n\s*\n', content.strip())
         for block in blocks:
             lines = block.split('\n')
-            if len(lines) < 3:
-                continue
-            timestamp_line = None
-            for i, line in enumerate(lines):
-                if '-->' in line:
-                    timestamp_line = i
-                    break
-            if timestamp_line is None:
-                continue
+            if len(lines) < 3: continue
+            timestamp_line = next((i for i, line in enumerate(lines) if '-->' in line), None)
+            if timestamp_line is None: continue
+            
             time_str = lines[timestamp_line].strip()
             match = re.search(r'(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)\s*-->\s*(\d{1,2}:\d{1,2}(?::\d{1,2})?[,.]\d+)', time_str)
-            if not match:
-                continue
+            if not match: continue
+            
             s_ms = ts_to_ms(match.group(1)) + offset
             e_ms = ts_to_ms(match.group(2)) + offset
-
-            text_lines = lines[timestamp_line+1:]
-            text_lines = [l for l in text_lines if l.strip()]
-            if not text_lines:
-                continue
+            text_lines = [l for l in lines[timestamp_line+1:] if l.strip()]
+            if not text_lines: continue
+            
             clean_text = '\n'.join(text_lines).strip()
             if clean_text:
-                all_entries.append('\n'.join([
-                    str(global_index),
-                    f"{ms_to_srt(s_ms)} --> {ms_to_srt(e_ms)}",
-                    clean_text
-                ]))
+                all_entries.append('\n'.join([str(global_index), f"{ms_to_srt(s_ms)} --> {ms_to_srt(e_ms)}", clean_text]))
                 global_index += 1
 
         cum_offset_ms += episode_durations[ep-1]
@@ -230,145 +213,93 @@ def merge_subtitles(temp_dir, subtitle_map, total_eps, movie_name):
     if all_entries:
         with open(merged_path, "w", encoding="utf-8") as f:
             f.write('\n\n'.join(all_entries))
-        if os.path.getsize(merged_path) < 100:
-            print("⚠️ Merged SRT too small, might be empty", flush=True)
         return merged_path
     return None
 
-# ---------- التحميل ----------
+# ========== التحميل ==========
 def download_with_ytdlp(url, output_path, ep_num):
     try:
-        cmd = [
-            "yt-dlp",
-            "-o", output_path,
-            "--no-part", "--no-mtime",
-            "--quiet", "--no-warnings",
-            "--no-check-certificate",
-            "--retries", "10",
-            "--fragment-retries", "10",
-            "--retry-sleep", "1..3",
-            url
-        ]
+        cmd = ["yt-dlp", "-o", output_path, "--no-part", "--no-mtime", "--quiet", "--no-warnings", "--no-check-certificate", "--retries", "10", "--fragment-retries", "10", "--retry-sleep", "1..3", url]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 10000:
             print(f"✅ Episode {ep_num} downloaded via yt-dlp", flush=True)
             return True
     except Exception as e:
         print(f"⚠️ yt-dlp failed for ep {ep_num}: {e}", flush=True)
-    safe_delete(output_path)
+        safe_delete(output_path)
     return False
 
 def download_episode(ep_data, temp_dir, subtitle_map):
     url = ep_data.get("video_url", "")
     ep_num = ep_data.get("episode", "?")
     sub_url = ep_data.get("subtitle_url", "")
-
-    if not url or "http" not in str(url):
-        print(f"⏭ Skipping episode {ep_num}: invalid url", flush=True)
-        return None
-
-    try:
-        ep_num_int = int(ep_num)
-    except:
-        print(f"⏭ Skipping episode {ep_num}: invalid number", flush=True)
-        return None
+    if not url or "http" not in str(url): return None
+    try: ep_num_int = int(ep_num)
+    except: return None
 
     video_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.mp4")
     srt_path = os.path.join(temp_dir, f"ep_{ep_num_int:04d}.srt")
 
     if sub_url:
         sub_url = str(sub_url).strip()
-        if sub_url.startswith("//"):
-            sub_url = "https:" + sub_url
-        elif sub_url.startswith("/"):
-            sub_url = "https://netshort.dramafren.org" + sub_url
-        elif not sub_url.startswith("http"):
-            sub_url = "https://netshort.dramafren.org/" + sub_url
+        if sub_url.startswith("//"): sub_url = "https:" + sub_url
+        elif sub_url.startswith("/"): sub_url = "https://netshort.dramafren.org" + sub_url
+        elif not sub_url.startswith("http"): sub_url = "https://netshort.dramafren.org/" + sub_url
 
     for attempt in range(5):
         try:
             print(f"⬇️ Downloading episode {ep_num} (attempt {attempt + 1})...", flush=True)
             if ".m3u8" in url or ".mp4" not in url.split("?")[0]:
-                if download_with_ytdlp(url, video_path, ep_num):
-                    break
+                if download_with_ytdlp(url, video_path, ep_num): break
             r = requests.get(url, stream=True, verify=False, timeout=120)
             r.raise_for_status()
             with open(video_path, "wb") as out:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        out.write(chunk)
+                    if chunk: out.write(chunk)
             break
         except Exception as e:
             print(f"⚠️ Attempt {attempt + 1} failed for ep {ep_num}: {e}", flush=True)
             safe_delete(video_path)
-            if attempt < 4:
-                time.sleep(2 ** attempt)
-            else:
-                print(f"❌ All attempts failed for ep {ep_num}", flush=True)
-                return None
+            if attempt < 4: time.sleep(2 ** attempt)
+            else: return None
 
-    if not os.path.exists(video_path) or os.path.getsize(video_path) < 10000:
-        return None
-
-    size_mb = os.path.getsize(video_path) / (1024 * 1024)
-    print(f"✅ Episode {ep_num} downloaded ({size_mb:.1f} MB)", flush=True)
+    if not os.path.exists(video_path) or os.path.getsize(video_path) < 10000: return None
 
     if sub_url:
         try:
-            print(f"  📝 Downloading subtitle for ep {ep_num} from {sub_url[:60]}...", flush=True)
             sub_r = requests.get(sub_url, verify=False, timeout=30)
             if sub_r.status_code == 200:
-                raw_bytes = sub_r.content
-                decoded_text = decode_subtitle_content(raw_bytes)
+                decoded_text = decode_subtitle_content(sub_r.content)
                 normalized = normalize_subtitles(decoded_text)
                 if normalized.strip():
-                    with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(normalized)
+                    with open(srt_path, "w", encoding="utf-8") as f: f.write(normalized)
                     subtitle_map[ep_num_int] = normalized
-                    print(f"  ✅ Subtitle ep {ep_num} downloaded and normalized", flush=True)
-                else:
-                    print(f"  ⚠️ Subtitle ep {ep_num} empty after normalization.", flush=True)
-            else:
-                print(f"  ⚠️ Subtitle request failed: {sub_r.status_code}", flush=True)
         except Exception as sub_e:
-            print(f"  ⚠️ Subtitle download failed: {sub_e}", flush=True)
+            print(f"⚠️ Subtitle download failed: {sub_e}", flush=True)
 
     return {"ep": ep_num_int, "path": video_path}
 
-# ---------- الرفع ----------
+# ========== الرفع ==========
 def upload_to_vidara(video_path, title, srt_path=None):
     try:
         import vidara_uploader
         return vidara_uploader.upload_video_to_vidara(video_path, title, srt_path)
     except Exception as e:
         print(f"❌ Vidara upload error: {e}", flush=True)
-        traceback.print_exc()
         return None
 
 def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size):
-    print("")
-    print("☁️ Starting Google Drive upload...", flush=True)
+    print("\n☁️ Starting Google Drive upload...", flush=True)
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
-
     try:
-        creds = Credentials(
-            None,
-            refresh_token=GDRIVE_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=GDRIVE_CLIENT_ID,
-            client_secret=GDRIVE_CLIENT_SECRET,
-            scopes=["https://www.googleapis.com/auth/drive"]
-        )
+        creds = Credentials(None, refresh_token=GDRIVE_REFRESH_TOKEN, token_uri="https://oauth2.googleapis.com/token", client_id=GDRIVE_CLIENT_ID, client_secret=GDRIVE_CLIENT_SECRET, scopes=["https://www.googleapis.com/auth/drive"])
         creds.refresh(Request())
         service = build("drive", "v3", credentials=creds)
 
-        file_metadata = {
-            "name": f"{movie_name}_Full_Movie.mp4",
-            "parents": [GDRIVE_FOLDER_ID]
-        }
+        file_metadata = {"name": f"{movie_name}_Full_Movie.mp4", "parents": [GDRIVE_FOLDER_ID]}
         media = MediaFileUpload(final_output, mimetype="video/mp4", resumable=True, chunksize=10 * 1024 * 1024)
         uploaded = service.files().create(body=file_metadata, media_body=media, fields="id, webViewLink, name").execute()
         video_id = uploaded.get("id")
@@ -383,206 +314,147 @@ def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_coun
         service.permissions().create(fileId=video_id, body={"type": "anyone", "role": "reader"}).execute()
         drive_link = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{video_id}/view"
 
-        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!*"
-        msg += f"\n\n🎬 *{data.get('series_title', 'Unknown')}*"
-        msg += f"\n📦 الحلقات: {downloaded_count}"
-        msg += f"\n📁 الحجم: {output_size:.0f} MB"
-        if srt_link:
-            msg += f"\n📝 [ملف الترجمة]({srt_link})"
-        msg += f"\n\n🔗 [رابط المشاهدة]({drive_link})"
+        msg = f"🎉 *اكتمل الدمج والرفع بنجاح!* \n\n🎬 *{data.get('series_title', 'Unknown')}* \n📦 الحلقات: {downloaded_count} \n📁 الحجم: {output_size:.0f} MB "
+        if srt_link: msg += f"\n📝 [ملف الترجمة]({srt_link}) "
+        msg += f"\n\n🔗 [رابط المشاهدة]({drive_link}) "
         send_telegram(msg)
-        print(f"🔗 Drive link: {drive_link}", flush=True)
-        return drive_link
+        
+        # ✅ إرجاع كلا الرابطين
+        return drive_link, srt_link 
     except Exception as e:
         traceback.print_exc()
         fail(f"فشل الرفع على Google Drive:\n{str(e)[:1000]}")
+        return None, None
+
+# ========== ✅ Firebase Firestore ==========
+def init_firebase():
+    if not FIREBASE_SA_JSON:
+        print("⚠️ FIREBASE_SERVICE_ACCOUNT_JSON not set. Skipping Firebase.", flush=True)
+        return None
+    try:
+        if not firebase_admin._apps:
+            cred_dict = json.loads(FIREBASE_SA_JSON)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
+    except Exception as e:
+        print(f"❌ Firebase init failed: {e}", flush=True)
         return None
 
-# ---------- MAIN ----------
+def upload_to_firebase(db, data, video_link, srt_link):
+    if not db or not video_link: return
+    try:
+        drama_id = str(data.get('drama_id', 'unknown'))
+        doc_ref = db.collection('series').document(drama_id)
+        
+        doc_data = {
+            'title': data.get('series_title', 'Unknown'),
+            'description': data.get('description', ''),
+            'poster_url': data.get('poster_url', ''),
+            'video_link': video_link,
+            'subtitle_link': srt_link or '',
+            'total_episodes': data.get('total_episodes', 0),
+            'upload_target': UPLOAD_TARGET,
+            'updated_at': firestore.SERVER_TIMESTAMP
+        }
+        
+        doc_ref.set(doc_data, merge=True)
+        print(f"✅ Uploaded metadata to Firebase (ID: {drama_id})", flush=True)
+    except Exception as e:
+        print(f"⚠️ Firebase upload failed: {e}", flush=True)
+
+# ========== MAIN ==========
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        fail("Usage: python merge_script.py <json_path>")
-
+    if len(sys.argv) < 2: fail("Usage: python merge_script.py <json_path>")
     json_path = sys.argv[1]
-    print(f"📂 JSON path: {json_path}", flush=True)
-
-    if not os.path.exists(json_path):
-        fail(f"ملف JSON غير موجود: {json_path}")
+    if not os.path.exists(json_path): fail(f"ملف JSON غير موجود: {json_path}")
 
     if UPLOAD_TARGET == "gdrive":
-        if not all([GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN]):
-            fail("❌ متغيرات OAuth غير موجودة في Secrets")
-        if not GDRIVE_FOLDER_ID:
-            fail("متغير GDRIVE_FOLDER_ID غير موجود في Secrets")
+        if not all([GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, GDRIVE_REFRESH_TOKEN]): fail("❌ متغيرات OAuth غير موجودة")
+        if not GDRIVE_FOLDER_ID: fail("متغير GDRIVE_FOLDER_ID غير موجود")
 
-    print(f"✅ UPLOAD_TARGET = {UPLOAD_TARGET}", flush=True)
-
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    episodes   = data.get("episodes", [])
-    movie_name = "".join(
-        x for x in data.get("series_title", "movie")
-        if x.isalnum() or x in " _-"
-    ).strip() or "movie"
+    with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
+    episodes = data.get("episodes", [])
+    movie_name = "".join(x for x in data.get("series_title", "movie") if x.isalnum() or x in " _-").strip() or "movie"
 
     final_output = f"/tmp/{movie_name}_Full_Movie.mp4"
-    final_srt    = f"/tmp/{movie_name}_Full_Movie.srt"
-    list_file    = "/tmp/mylist.txt"
-
-    print(f"🎬 Series: {data.get('series_title')}", flush=True)
-    print(f"📦 Episodes: {len(episodes)}", flush=True)
+    list_file = "/tmp/mylist.txt"
 
     target_name = "vidara.so 📺" if UPLOAD_TARGET == "vidara" else "Google Drive ☁️"
-    send_telegram(
-        f"🚀 *GitHub Actions* بدأ العمل!\n"
-        f"🎬 المسلسل: *{data.get('series_title', 'Unknown')}*\n"
-        f"📦 الحلقات: {len(episodes)}\n"
-        f"📤 الوجهة: *{target_name}*"
-    )
+    send_telegram(f"🚀 *GitHub Actions* بدأ العمل!\n🎬 المسلسل: *{data.get('series_title', 'Unknown')}*\n📦 الحلقات: {len(episodes)}\n📤 الوجهة: *{target_name}*")
 
     subtitle_map = {}
-
-    print("")
-    print("🚀 Starting parallel downloads (max 10 workers)...", flush=True)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(download_episode, ep, TEMP_DIR, subtitle_map): ep for ep in episodes}
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
-            if result:
-                results.append(result)
+            if result: results.append(result)
 
     results.sort(key=lambda x: x["ep"])
     downloaded_count = len(results)
-
-    if downloaded_count == 0:
-        fail("فشل تحميل كل الحلقات. لا يوجد شيء لدمجه.")
+    if downloaded_count == 0: fail("فشل تحميل كل الحلقات.")
 
     with open(list_file, "w", encoding="utf-8") as f:
-        for r in results:
-            f.write(f"file '{r['path']}'\n")
-
-    print("")
-    print(f"✅ Downloaded {downloaded_count}/{len(episodes)} episodes", flush=True)
-    if subtitle_map:
-        print(f"📝 Downloaded {len(subtitle_map)} subtitle files", flush=True)
+        for r in results: f.write(f"file '{r['path']}'\n")
 
     send_telegram(f"⏳ اكتمل التحميل ({downloaded_count} حلقة)، جاري الدمج بـ FFmpeg...")
 
     merged_srt = None
     if subtitle_map:
-        print("")
-        print("📝 Merging subtitles...", flush=True)
         merged_srt = merge_subtitles(TEMP_DIR, subtitle_map, downloaded_count, movie_name)
-        if merged_srt and os.path.exists(merged_srt):
-            print(f"✅ Merged subtitle: {merged_srt}", flush=True)
-            with open(merged_srt, 'r', encoding='utf-8') as f:
-                preview = f.read(500)
-            print(f"📄 SRT preview:\n{preview}...", flush=True)
-        else:
-            print("⚠️ Failed to merge subtitles", flush=True)
 
-    print("")
-    print("🔀 Starting FFmpeg merge...", flush=True)
-
-    # تحويل إلى TS للحفاظ على التوقيت
+    # FFmpeg Merge Logic (TS conversion for sync)
     ts_files = []
     for r in results:
         ep = r["ep"]
         mp4_path = r["path"]
         ts_path = os.path.join(TEMP_DIR, f"ep_{ep:04d}.ts")
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", mp4_path,
-            "-c", "copy",
-            "-bsf:v", "h264_mp4toannexb",
-            "-f", "mpegts",
-            "-fflags", "+genpts",
-            ts_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0 and os.path.exists(ts_path):
+        cmd = ["ffmpeg", "-y", "-i", mp4_path, "-c", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "mpegts", "-fflags", "+genpts", ts_path]
+        if subprocess.run(cmd, capture_output=True).returncode == 0 and os.path.exists(ts_path):
             ts_files.append(ts_path)
-            print(f"  ✅ Ep {ep} → TS", flush=True)
 
-    # دمج TS
     if len(ts_files) >= 2:
         ts_list_file = "/tmp/ts_list.txt"
         with open(ts_list_file, "w", encoding="utf-8") as f:
-            for tsf in ts_files:
-                f.write(f"file '{tsf}'\n")
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-fflags", "+genpts",
-            "-f", "concat", "-safe", "0",
-            "-i", ts_list_file,
-            "-c", "copy",
-            "-bsf:a", "aac_adtstoasc",
-            "-movflags", "+faststart",
-            "-copytb", "1",
-            final_output
-        ]
+            for tsf in ts_files: f.write(f"file '{tsf}'\n")
+        cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", ts_list_file, "-c", "copy", "-bsf:a", "aac_adtstoasc", "-movflags", "+faststart", "-copytb", "1", final_output]
     else:
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", list_file,
-            "-c", "copy",
-            "-fflags", "+genpts",
-            "-movflags", "+faststart",
-            "-copytb", "1",
-            final_output
-        ]
+        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", "-fflags", "+genpts", "-movflags", "+faststart", "-copytb", "1", final_output]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stdout:
-        print(f"FFmpeg stdout:\n{result.stdout}", flush=True)
-    if result.stderr:
-        print(f"FFmpeg stderr:\n{result.stderr}", flush=True)
+    if subprocess.run(cmd, capture_output=True).returncode != 0: fail("فشل الدمج بـ FFmpeg")
+    if not os.path.exists(final_output): fail("ملف الدمج لم يُنشأ")
 
-    if result.returncode != 0:
-        fail(f"فشل الدمج:\n{result.stderr[:500]}")
-
-    if not os.path.exists(final_output):
-        fail("ملف الدمج لم يُنشأ")
-
-    for tsf in ts_files:
-        safe_delete(tsf)
-
+    for tsf in ts_files: safe_delete(tsf)
     output_size = os.path.getsize(final_output) / (1024 * 1024)
-    print(f"✅ Merged file: {final_output} ({output_size:.1f} MB)", flush=True)
+
+    # ✅ متغيرات لتخزين الروابط النهائية للرفع إلى Firebase
+    final_video_link = ""
+    final_srt_link = ""
 
     if UPLOAD_TARGET == "vidara":
-        print("")
-        print("📺 Starting vidara.so upload...", flush=True)
         vidara_result = upload_to_vidara(final_output, data.get('series_title', 'Video'), merged_srt)
         if vidara_result:
-            vidara_url = vidara_result.get('url', '')
-            filecode = vidara_result.get('filecode', '')
-            msg = f"🎉 *رفع على vidara.so بنجاح!*"
-            msg += f"\n\n🎬 *{data.get('series_title', 'Unknown')}*"
-            msg += f"\n📦 الحلقات: {downloaded_count}"
-            msg += f"\n📁 الحجم: {output_size:.0f} MB"
-            if merged_srt and os.path.exists(merged_srt):
-                msg += "\n📝 ملف الترجمة مرفق"
-            msg += f"\n\n🔗 [رابط المشاهدة]({vidara_url})"
+            final_video_link = vidara_result.get('url', '')
+            msg = f"🎉 *رفع على vidara.so بنجاح!* \n\n🎬 *{data.get('series_title', 'Unknown')}* \n📦 الحلقات: {downloaded_count} \n📁 الحجم: {output_size:.0f} MB \n\n🔗 [رابط المشاهدة]({final_video_link}) "
             send_telegram(msg)
-            print(f"🔗 Vidara link: {vidara_url}", flush=True)
         else:
-            fail("فشل الرفع على vidara.so. تحقق من API Key وشبكة الإنترنت.")
+            fail("فشل الرفع على vidara.so.")
     else:
-        upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
+        drive_link, srt_link = upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_count, output_size)
+        final_video_link = drive_link
+        final_srt_link = srt_link
 
-    print("")
-    print("🧹 Cleaning up...", flush=True)
-    for r in results:
-        safe_delete(r["path"])
+    # ✅ رفع البيانات إلى Firebase
+    print("\n☁️ Uploading metadata to Firebase...", flush=True)
+    db = init_firebase()
+    if db:
+        upload_to_firebase(db, data, final_video_link, final_srt_link)
+
+    # Cleanup
+    for r in results: safe_delete(r["path"])
     safe_delete(final_output)
     safe_delete(merged_srt)
     safe_delete(list_file)
     safe_delete("/tmp/ts_list.txt")
-    print("")
-    print("✅ Done!", flush=True)
+    print("\n✅ Done!", flush=True)
