@@ -10,7 +10,7 @@ import time
 import concurrent.futures
 import chardet
 
-# ✅ إضافة مكتبات Firebase
+# ✅ Firebase Imports
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -319,7 +319,6 @@ def upload_to_gdrive(final_output, merged_srt, movie_name, data, downloaded_coun
         msg += f"\n\n🔗 [رابط المشاهدة]({drive_link}) "
         send_telegram(msg)
         
-        # ✅ إرجاع كلا الرابطين
         return drive_link, srt_link 
     except Exception as e:
         traceback.print_exc()
@@ -404,7 +403,7 @@ if __name__ == "__main__":
     if subtitle_map:
         merged_srt = merge_subtitles(TEMP_DIR, subtitle_map, downloaded_count, movie_name)
 
-    # FFmpeg Merge Logic (TS conversion for sync)
+    # FFmpeg Merge Logic
     ts_files = []
     for r in results:
         ep = r["ep"]
@@ -428,7 +427,6 @@ if __name__ == "__main__":
     for tsf in ts_files: safe_delete(tsf)
     output_size = os.path.getsize(final_output) / (1024 * 1024)
 
-    # ✅ متغيرات لتخزين الروابط النهائية للرفع إلى Firebase
     final_video_link = ""
     final_srt_link = ""
 
