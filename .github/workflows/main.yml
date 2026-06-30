@@ -8,49 +8,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Debug files
-        run: |
-          echo "Current directory:"
-          pwd
-          echo "Repository files:"
-          ls -la
-          echo "Workflow files:"
-          ls -la .github/workflows || true
-          echo "Jobs files:"
-          ls -la jobs || true
-
       - name: Validate payload
         run: |
           JSON_PATH="${{ github.event.client_payload.json_path }}"
-          echo "JSON path: $JSON_PATH"
-          echo "Chat ID: ${{ github.event.client_payload.chat_id }}"
-          echo "Upload Target: ${{ github.event.client_payload.upload_target }}"
-
           test -n "$JSON_PATH" || (echo "❌ json_path فارغ" && exit 1)
-          test -f ".github/workflows/merge_script.py" || (echo "❌ merge_script.py غير موجود" && exit 1)
-
+          
           FILE_FOUND=false
           for i in 1 2 3 4 5 6; do
-            if [ -f "$JSON_PATH" ]; then
-              echo "✅ الملف موجود في المحاولة $i"
-              FILE_FOUND=true
-              break
-            fi
-            echo "⏳ المحاولة $i: الملف غير موجود بعد، جاري التحديث..."
-            git fetch origin main
-            git reset --hard origin/main
-            sleep 5
+            if [ -f "$JSON_PATH" ]; then FILE_FOUND=true; break; fi
+            git fetch origin main && git reset --hard origin/main && sleep 5
           done
-
-          if [ "$FILE_FOUND" = false ]; then
-            echo "❌ الملف غير موجود بعد 6 محاولات: $JSON_PATH"
-            exit 1
-          fi
+          [ "$FILE_FOUND" = true ] || (echo "❌ الملف غير موجود" && exit 1)
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -62,7 +34,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
-          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp chardet   # ← تمت إضافة chardet
+          # ✅ تمت إضافة firebase-admin
+          pip install requests google-auth google-auth-oauthlib google-api-python-client yt-dlp chardet firebase-admin
 
       - name: Run merge script
         env:
@@ -74,6 +47,8 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           UPLOAD_TARGET: ${{ github.event.client_payload.upload_target }}
           VIDARA_API_KEY: ${{ secrets.VIDARA_API_KEY }}
+          # ✅ إضافة متغير Firebase
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           PYTHONUNBUFFERED: "1"
         run: |
           python .github/workflows/merge_script.py "${{ github.event.client_payload.json_path }}"
