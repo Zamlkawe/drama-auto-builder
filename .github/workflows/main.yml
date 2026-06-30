@@ -16,6 +16,7 @@ jobs:
         run: |
           JSON_PATH="${{ github.event.client_payload.json_path }}"
           test -n "$JSON_PATH" || (echo "❌ json_path فارغ" && exit 1)
+          test -f ".github/workflows/merge_script.py" || (echo "❌ merge_script.py غير موجود" && exit 1)
           
           FILE_FOUND=false
           for i in 1 2 3 4 5 6; do
