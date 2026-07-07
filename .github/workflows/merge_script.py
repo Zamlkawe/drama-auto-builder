@@ -29,6 +29,9 @@ FIREBASE_SA_JSON     = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
 TEMP_DIR = "/tmp/drama_videos"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+# 🌐 أساس رابط المزود (يُضبط من data['scraped_from'] في main). افتراضي: نتشورت للتوافق العكسي.
+BASE_URL = "https://netshort.dramafren.org"
+
 # ========== أدوات فك الترميز ==========
 def decode_subtitle_content(content_bytes):
     encodings = ['utf-8', 'windows-1256', 'iso-8859-6', 'cp1256', 'utf-8-sig']
@@ -212,8 +215,8 @@ def download_episode(ep_data, temp_dir, subtitle_map):
     if sub_url:
         sub_url = str(sub_url).strip()
         if sub_url.startswith("//"): sub_url = "https:" + sub_url
-        elif sub_url.startswith("/"): sub_url = "https://netshort.dramafren.org" + sub_url
-        elif not sub_url.startswith("http"): sub_url = "https://netshort.dramafren.org/" + sub_url
+        elif sub_url.startswith("/"): sub_url = BASE_URL + sub_url
+        elif not sub_url.startswith("http"): sub_url = BASE_URL + "/" + sub_url
 
     for attempt in range(5):
         try:
@@ -312,8 +315,11 @@ def init_firebase():
 def upload_to_firebase(db, data, video_link, srt_link):
     if not db or not video_link: return
     try:
-        drama_id = str(data.get('drama_id', 'unknown'))
-        doc_ref = db.collection('series').document(drama_id)
+        raw_id = str(data.get('drama_id', 'unknown'))
+        provider = str(data.get('provider', '') or '').strip()
+        # 🔑 معرّف فريد لكل مزود عشان ماييجيش تعارض بين مزودين ليهم نفس الرقم
+        doc_id = f"{provider}_{raw_id}" if provider else raw_id
+        doc_ref = db.collection('series').document(doc_id)
         
         doc_data = {
             'title': data.get('series_title', 'Unknown'),
@@ -322,6 +328,9 @@ def upload_to_firebase(db, data, video_link, srt_link):
             'category': data.get('category', ''),
             'rating': data.get('rating', ''),
             'year': data.get('year', ''),
+            'provider': provider or 'netshort',
+            'provider_name': data.get('provider_name', ''),
+            'drama_id': raw_id,
             'video_link': video_link,
             'subtitle_link': srt_link or '',
             'total_episodes': data.get('total_episodes', 0),
@@ -330,7 +339,7 @@ def upload_to_firebase(db, data, video_link, srt_link):
         }
         
         doc_ref.set(doc_data, merge=True)
-        print(f"✅ Uploaded to Firebase (ID: {drama_id})", flush=True)
+        print(f"✅ Uploaded to Firebase (ID: {doc_id})", flush=True)
         print(f"   📝 Title: {doc_data['title']}", flush=True)
         print(f"   🖼️ Poster: {doc_data['poster_url'][:80] if doc_data['poster_url'] else 'N/A'}...", flush=True)
         print(f"   📂 Category: {doc_data['category']}", flush=True)
@@ -348,6 +357,9 @@ if __name__ == "__main__":
         if not GDRIVE_FOLDER_ID: fail("متغير GDRIVE_FOLDER_ID غير موجود")
 
     with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
+    _sf = str(data.get("scraped_from", "") or "").strip().rstrip("/")
+    if _sf.startswith("http"): BASE_URL = _sf
+    print(f"🌐 BASE_URL = {BASE_URL} | provider = {data.get('provider', 'netshort')}", flush=True)
     episodes = data.get("episodes", [])
     movie_name = "".join(x for x in data.get("series_title", "movie") if x.isalnum() or x in " _-").strip() or "movie"
 
